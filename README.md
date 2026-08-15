@@ -1,36 +1,18 @@
 # boltzpmp
 
-`boltzpmp` は、プロパゲータ法で電子ボルツマン方程式を解く `boltzpm` の
-Rust移植版です。数値計算コアをRustで実装し、Pythonから既存版に近いAPIで利用
-できることを目標としています。
+`boltzpmp` は、プロパゲータ法で電子ボルツマン方程式を解く、Rustで高速化された
+Pythonパッケージです。DC・RF電場における電子エネルギー分布、平均エネルギー、
+ドリフト速度、反応速度係数を計算できます。
 
-> 現在は移植中のalpha版です。数値互換試験と性能評価が完了するまで、研究結果の
-> 本計算には旧版との比較なしで使用しないでください。
+## インストール
 
-## 開発環境
-
-Windows PowerShellでは次のように開発用インストールと検証を行います。
+Python 3.10以降が必要です。TestPyPIの検証用パッケージは次のコマンドで
+インストールできます。
 
 ```powershell
-$env:UV_CACHE_DIR = Join-Path (Get-Location) '.uv-cache'
-uv run --with maturin maturin develop
-uv run --extra test pytest -q
-cargo test --workspace
+uv pip install --index-url https://test.pypi.org/simple/ `
+  --extra-index-url https://pypi.org/simple/ boltzpmp
 ```
-
-## TestPyPI公開
-
-`.github/workflows/wheels.yml` を手動実行し、`publish_testpypi` を有効にすると、
-3 OS向けwheelとsdistの全ビルド成功後にTestPyPIへ公開します。公開ジョブは
-GitHubの `testpypi` EnvironmentとOIDC Trusted Publishingを使用し、APIトークンを
-リポジトリへ保存しません。TestPyPI側のpublisherには次を設定してください。
-
-| 項目 | 値 |
-|---|---|
-| Owner | `Reasonia-TK` |
-| Repository | `boltzpmp` |
-| Workflow | `wheels.yml` |
-| Environment | `testpypi` |
 
 ## クイックスタート
 
@@ -51,7 +33,7 @@ print(result.drift_velocity)
 print(result.rate_coefficients)
 ```
 
-RF周期定常計算も旧版と同じ形で実行できます。
+RF周期定常計算も同じソルバーから実行できます。
 
 ```python
 result = solver.solve_rf(EN_rms_Td=10.0, freq_Hz=13.56e6)
@@ -69,30 +51,64 @@ results = bp.solve_dc_sweep(
 )
 ```
 
-`PMSolver(..., parallel=True)` は単一計算内の実験的Rayon並列です。現在の代表
-メッシュでは同期コストが上回ったため、既定は `False` です。通常は
-`solve_dc_sweep` による計算点単位の並列化を使用してください。
+計算点の並列化には `solve_dc_sweep` を使用してください。単一計算内の並列化は
+`PMSolver(..., parallel=True)` で明示的に有効化できます。
 
-## 現在の検証結果
+## LXCat断面積による検証
 
-- 旧Python版のテスト: 26件成功
-- Rust単体テスト: 4件成功
-- Python/Rust互換・物理試験: 14件成功
-- 54,000セル固定ステップ: 旧版比 約3.2倍
-- 54,000セル計算4件の並列掃引: 逐次Rust比 約2.1倍
+2026-08-15に、LXCatのMorgan databaseから取得したAr電子衝突断面積セットを使い、
+1、10、50、100 Tdのupwind計算と、10、100 Tdの自動ブレンディング計算を検証しました。
+6条件すべてが収束し、Python参照実装との比較は次の結果でした。
 
-値は2026-08-15に同一Windows環境で取得したもので、CPUや入力条件に依存します。
-生の測定値は `reference/*.json` に保存しています。
+| 指標 | 最大誤差 | 合格基準 |
+|---|---:|---:|
+| 状態分布のL1差 | `3.52e-14` | `1e-5` |
+| EEDFの相対L1差 | `3.55e-14` | `1e-5` |
+| 主要物理量の相対差 | `3.63e-14` | `1e-5` |
+| 反応速度係数の相対差 | `4.06e-14` | `1e-5` |
 
-## 既知の制約
+入力ファイルのSHA-256は
+`29c903d91e68bb0895f45b763c8c982ef09c2b2e0636fc75fd0545dc7d69abc3` です。
+条件、収束ステップ数、各物理量、生の誤差は
+[`VALIDATION.md`](https://github.com/Reasonia-TK/boltzpmp/blob/main/VALIDATION.md) と
+[`reference/lxcat_morgan_argon_validation.json`](https://github.com/Reasonia-TK/boltzpmp/blob/main/reference/lxcat_morgan_argon_validation.json)
+に記録しています。
 
-- 低換算電場では物理的な緩和時間が長く、Rust化しても必要ステップ数自体は減りません。
-- 単一計算内Rayon並列は実験機能であり、メッシュによって遅くなる場合があります。
-- 同梱Ar/Ar*断面積は検証用の近似データです。本計算には信頼できるLXCatデータを
-  指定してください。
-- alpha期間中は重要な計算で旧 `boltzpm` との比較を行ってください。
+## 開発とテスト
 
-移植方針と検証ゲートは [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) を参照してください。
+Windows PowerShellでは次のコマンドを実行します。
+
+```powershell
+$env:UV_CACHE_DIR = Join-Path (Get-Location) '.uv-cache'
+uv run --with maturin maturin develop --release
+uv run --extra test pytest -q
+cargo test --workspace
+```
+
+実データ検証は、断面積ファイルとPython参照実装の場所を指定して再実行できます。
+
+```powershell
+$env:UV_CACHE_DIR = Join-Path (Get-Location) '.uv-cache'
+uv run --with scipy --extra test python benchmarks\validate_lxcat.py `
+  'C:\path\to\Ar-cross-sections.txt' `
+  --reference-source 'C:\path\to\python-reference' `
+  --output reference\lxcat_morgan_argon_validation.json
+```
+
+現在のテスト構成はRust単体テスト4件、Python API・物理テスト15件です。
+
+## TestPyPI公開
+
+`.github/workflows/wheels.yml` を手動実行し、`publish_testpypi` を有効にすると、
+3 OS向けwheelとsdistの全ビルド成功後にTestPyPIへ公開します。公開にはGitHubの
+`testpypi` EnvironmentとOIDC Trusted Publishingを使用します。
+
+| 項目 | 値 |
+|---|---|
+| Owner | `Reasonia-TK` |
+| Repository | `boltzpmp` |
+| Workflow | `wheels.yml` |
+| Environment | `testpypi` |
 
 ## ライセンス
 

@@ -1,0 +1,511 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-15T13:53:29.456579+00:00",
+  "passed": true,
+  "source": {
+    "filename": "Ar電子衝突断面積.txt",
+    "sha256": "29c903d91e68bb0895f45b763c8c982ef09c2b2e0636fc75fd0545dc7d69abc3",
+    "reference": "Morgan database, www.lxcat.net, retrieved on July 11, 2026."
+  },
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.11",
+    "numpy": "2.5.2",
+    "reference_package": "0.1.0",
+    "rust_package": "0.1.1"
+  },
+  "conditions": {
+    "gas": "Ar",
+    "fraction": 1.0,
+    "p_Pa": 133.0,
+    "T_K": 273.0,
+    "mesh": {
+      "eps_max_eV": 60.0,
+      "d_eps_eV": 0.5,
+      "n_theta": 48
+    },
+    "solve": {
+      "tol": 1e-05,
+      "max_steps": 1000000,
+      "check_every": 200
+    },
+    "upwind_fields_Td": [
+      100.0,
+      50.0,
+      10.0,
+      1.0
+    ],
+    "blending_fields_Td": [
+      100.0,
+      10.0
+    ]
+  },
+  "gates": {
+    "distribution_l1": 1e-05,
+    "eedf_relative_l1": 1e-05,
+    "scalar_relative_error": 1e-05,
+    "rate_relative_error": 1e-05,
+    "normalization_error": 1e-12,
+    "eepf_tail_ratio": 1e-06,
+    "negative_state_relative": 1e-14
+  },
+  "parser": {
+    "match": true,
+    "process_count": 4,
+    "processes": [
+      {
+        "kind": "ELASTIC",
+        "species": "Ar",
+        "name": "E + Ar -> E + Ar, Elastic",
+        "threshold_eV": 0.0,
+        "mass_ratio": 1.36e-05,
+        "rows": 60,
+        "energy_min_eV": 0.0,
+        "energy_max_eV": 75.0,
+        "data_sha256": "d907a689dceb3999513ebd7f8de0856bb861a3c191266e403c1322e6a1e6ba1a"
+      },
+      {
+        "kind": "EXCITATION",
+        "species": "Ar -> Ar*(11.55eV)",
+        "name": "E + Ar -> E + Ar*(11.55eV), Excitation [1]",
+        "threshold_eV": 11.55,
+        "mass_ratio": null,
+        "rows": 18,
+        "energy_min_eV": 11.55,
+        "energy_max_eV": 142.0,
+        "data_sha256": "797cf23ca2e127f7794b236912b7ffa3ed013bd00a951ee5ec71f82d744c5da3"
+      },
+      {
+        "kind": "EXCITATION",
+        "species": "Ar -> Ar*(11.55eV)",
+        "name": "E + Ar -> E + Ar*(11.55eV), Excitation [2]",
+        "threshold_eV": 11.55,
+        "mass_ratio": null,
+        "rows": 19,
+        "energy_min_eV": 11.55,
+        "energy_max_eV": 4000.0,
+        "data_sha256": "b0bbe3c85236fdfecdfcb722dc29928b4a50fa4b83ec75dc41ac8414c15d4d53"
+      },
+      {
+        "kind": "IONIZATION",
+        "species": "Ar -> Ar^+",
+        "name": "E + Ar -> E + E + Ar+, Ionization",
+        "threshold_eV": 15.759,
+        "mass_ratio": null,
+        "rows": 40,
+        "energy_min_eV": 15.759,
+        "energy_max_eV": 1000.0,
+        "data_sha256": "a4c6964a15f293bab72256a4e78b6f34228fdf5e730624f410809ba36b02a4be"
+      }
+    ]
+  },
+  "monotonic": {
+    "mean_energy": true,
+    "drift_velocity": true,
+    "ionization_frequency": true
+  },
+  "checks": {
+    "parser_match": true,
+    "all_cases_converged": true,
+    "negative_state_gate": true,
+    "normalization_gate": true,
+    "tail_gate": true,
+    "distribution_gate": true,
+    "eedf_gate": true,
+    "scalar_gate": true,
+    "rate_gate": true,
+    "monotonic_field_response": true
+  },
+  "cases": {
+    "upwind_100Td": {
+      "reference": {
+        "converged": true,
+        "n_steps": 4800,
+        "xi_used": 0.0,
+        "seconds": 0.27315209999869694,
+        "mean_energy_eV": 6.902640698938555,
+        "drift_velocity_m_per_s": 77959.40761370951,
+        "reduced_ionization_frequency_m3_per_s": 1.2413703847036547e-16,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.6265102371210468e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 2.951633706476153e-16,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 4.3367194206028316e-16,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 1.2413703847036547e-16
+        },
+        "normalization_error": 1.1102230246251565e-16,
+        "minimum_state": 4.894243309823295e-19,
+        "maximum_state": 0.0015379824114842566,
+        "eepf_tail_ratio": 1.3133967140343953e-14,
+        "warning_count": 0
+      },
+      "rust": {
+        "converged": true,
+        "n_steps": 4800,
+        "xi_used": 0.0,
+        "seconds": 0.11912610000035784,
+        "mean_energy_eV": 6.902640698938604,
+        "drift_velocity_m_per_s": 77959.40761371054,
+        "reduced_ionization_frequency_m3_per_s": 1.241370384703663e-16,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.6265102371210587e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 2.9516337064761746e-16,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 4.3367194206028617e-16,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 1.241370384703663e-16
+        },
+        "normalization_error": 1.1546319456101628e-14,
+        "minimum_state": 4.894243309823353e-19,
+        "maximum_state": 0.0015379824114842772,
+        "eepf_tail_ratio": 1.313396714034395e-14,
+        "warning_count": 0
+      },
+      "comparison": {
+        "energy_grid_exact": true,
+        "rate_keys_match": true,
+        "steps_match": true,
+        "xi_absolute_error": 0.0,
+        "distribution_l1": 1.1684340234062572e-14,
+        "eedf_relative_l1": 7.115738146238974e-15,
+        "eepf_relative_l1": 7.154310068097187e-15,
+        "scalar_relative_errors": {
+          "mean_energy": 7.076974626684301e-15,
+          "drift_velocity": 1.3252871113817217e-14,
+          "reduced_ionization_frequency": 6.751930947647101e-15
+        },
+        "max_scalar_relative_error": 1.3252871113817217e-14,
+        "rate_relative_errors": {
+          "Ar:E + Ar -> E + Ar, Elastic": 7.294431810969883e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 7.34971783456049e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 6.935039852629019e-15,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 6.751930947647101e-15
+        },
+        "max_rate_relative_error": 7.34971783456049e-15
+      },
+      "speedup": 2.2929660250598016
+    },
+    "upwind_50Td": {
+      "reference": {
+        "converged": true,
+        "n_steps": 4000,
+        "xi_used": 0.0,
+        "seconds": 0.22764199999983248,
+        "mean_energy_eV": 6.206457581681061,
+        "drift_velocity_m_per_s": 44699.01746041427,
+        "reduced_ionization_frequency_m3_per_s": 1.896013847254284e-17,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.4503594938299853e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 1.258644923263983e-16,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 1.870923720148574e-16,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 1.896013847254284e-17
+        },
+        "normalization_error": 0.0,
+        "minimum_state": 1.6749916495712845e-28,
+        "maximum_state": 0.001692802056211673,
+        "eepf_tail_ratio": 2.471206874985108e-24,
+        "warning_count": 0
+      },
+      "rust": {
+        "converged": true,
+        "n_steps": 4000,
+        "xi_used": 0.0,
+        "seconds": 0.09911360000114655,
+        "mean_energy_eV": 6.206457581681088,
+        "drift_velocity_m_per_s": 44699.01746041458,
+        "reduced_ionization_frequency_m3_per_s": 1.896013847254292e-17,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.4503594938299916e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 1.258644923263989e-16,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 1.8709237201485823e-16,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 1.896013847254292e-17
+        },
+        "normalization_error": 4.218847493575595e-15,
+        "minimum_state": 1.6749916495712923e-28,
+        "maximum_state": 0.0016928020562116807,
+        "eepf_tail_ratio": 2.471206874985107e-24,
+        "warning_count": 0
+      },
+      "comparison": {
+        "energy_grid_exact": true,
+        "rate_keys_match": true,
+        "steps_match": true,
+        "xi_absolute_error": 0.0,
+        "distribution_l1": 4.424852915223699e-15,
+        "eedf_relative_l1": 4.384300988224446e-15,
+        "eepf_relative_l1": 4.468788078806271e-15,
+        "scalar_relative_errors": {
+          "mean_energy": 4.293165987253323e-15,
+          "drift_velocity": 6.999397194512416e-15,
+          "reduced_ionization_frequency": 4.225638214748943e-15
+        },
+        "max_scalar_relative_error": 6.999397194512416e-15,
+        "rate_relative_errors": {
+          "Ar:E + Ar -> E + Ar, Elastic": 4.3512572356132314e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 4.700655983114522e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 4.34818800867286e-15,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 4.225638214748943e-15
+        },
+        "max_rate_relative_error": 4.700655983114522e-15
+      },
+      "speedup": 2.2967786458891526
+    },
+    "upwind_10Td": {
+      "reference": {
+        "converged": true,
+        "n_steps": 19600,
+        "xi_used": 0.0,
+        "seconds": 1.1377513999996154,
+        "mean_energy_eV": 5.173687733514704,
+        "drift_velocity_m_per_s": 13020.608661008553,
+        "reduced_ionization_frequency_m3_per_s": 6.763218400160146e-20,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.1499931038866341e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 1.7976517765009954e-17,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 2.634367006421427e-17,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 6.763218400160146e-20
+        },
+        "normalization_error": 1.1102230246251565e-16,
+        "minimum_state": 9.755311400647015e-67,
+        "maximum_state": 0.0019717819794962815,
+        "eepf_tail_ratio": 5.541873552901585e-63,
+        "warning_count": 0
+      },
+      "rust": {
+        "converged": true,
+        "n_steps": 19600,
+        "xi_used": 0.0,
+        "seconds": 0.48021029999836173,
+        "mean_energy_eV": 5.173687733514716,
+        "drift_velocity_m_per_s": 13020.608661008548,
+        "reduced_ionization_frequency_m3_per_s": 6.763218400160109e-20,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.1499931038866356e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 1.797651776500999e-17,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 2.6343670064214324e-17,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 6.763218400160109e-20
+        },
+        "normalization_error": 2.4424906541753444e-15,
+        "minimum_state": 9.755311400646989e-67,
+        "maximum_state": 0.001971781979496286,
+        "eepf_tail_ratio": 5.541873552901557e-63,
+        "warning_count": 0
+      },
+      "comparison": {
+        "energy_grid_exact": true,
+        "rate_keys_match": true,
+        "steps_match": true,
+        "xi_absolute_error": 0.0,
+        "distribution_l1": 2.50343071714067e-15,
+        "eedf_relative_l1": 2.3738074241397266e-15,
+        "eepf_relative_l1": 2.4059472316157726e-15,
+        "scalar_relative_errors": {
+          "mean_energy": 2.2317387617550898e-15,
+          "drift_velocity": 4.191023901193635e-16,
+          "reduced_ionization_frequency": 5.5173277668541825e-15
+        },
+        "max_scalar_relative_error": 5.5173277668541825e-15,
+        "rate_relative_errors": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.3170626266413252e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 2.057008783103126e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 2.105507025526386e-15,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 5.5173277668541825e-15
+        },
+        "max_rate_relative_error": 5.5173277668541825e-15
+      },
+      "speedup": 2.3692773770231437
+    },
+    "upwind_1Td": {
+      "reference": {
+        "converged": true,
+        "n_steps": 149000,
+        "xi_used": 0.0,
+        "seconds": 9.276578200000586,
+        "mean_energy_eV": 4.572910899375617,
+        "drift_velocity_m_per_s": 1821.2114408215746,
+        "reduced_ionization_frequency_m3_per_s": 9.960518366352477e-26,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 9.562728804870461e-14,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 9.495789478560016e-19,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 1.4611747363331666e-18,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 9.960518366352477e-26
+        },
+        "normalization_error": 2.220446049250313e-16,
+        "minimum_state": 1.7236339471280918e-149,
+        "maximum_state": 0.0021596300060076046,
+        "eepf_tail_ratio": 6.420419115704346e-146,
+        "warning_count": 0
+      },
+      "rust": {
+        "converged": true,
+        "n_steps": 149000,
+        "xi_used": 0.0,
+        "seconds": 3.69923320000089,
+        "mean_energy_eV": 4.572910899375531,
+        "drift_velocity_m_per_s": 1821.2114408216366,
+        "reduced_ionization_frequency_m3_per_s": 9.960518366352115e-26,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 9.562728804870209e-14,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 9.49578947855973e-19,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 1.4611747363331229e-18,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 9.960518366352115e-26
+        },
+        "normalization_error": 1.3322676295501878e-15,
+        "minimum_state": 1.7236339471280174e-149,
+        "maximum_state": 0.002159630006007679,
+        "eepf_tail_ratio": 6.4204191157039635e-146,
+        "warning_count": 0
+      },
+      "comparison": {
+        "energy_grid_exact": true,
+        "rate_keys_match": true,
+        "steps_match": true,
+        "xi_absolute_error": 0.0,
+        "distribution_l1": 3.522014554027473e-14,
+        "eedf_relative_l1": 3.552780167897535e-14,
+        "eepf_relative_l1": 3.547023816553575e-14,
+        "scalar_relative_errors": {
+          "mean_energy": 1.883992682268869e-14,
+          "drift_velocity": 3.408336451477496e-14,
+          "reduced_ionization_frequency": 3.630355899383864e-14
+        },
+        "max_scalar_relative_error": 3.630355899383864e-14,
+        "rate_relative_errors": {
+          "Ar:E + Ar -> E + Ar, Elastic": 2.6397850950468662e-14,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 3.001726527455991e-14,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 2.992017905216632e-14,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 3.630355899383864e-14
+        },
+        "max_rate_relative_error": 3.630355899383864e-14
+      },
+      "speedup": 2.5077030018000364
+    },
+    "blending_100Td": {
+      "reference": {
+        "converged": true,
+        "n_steps": 5800,
+        "xi_used": 0.7799999999999998,
+        "seconds": 0.4706548999984079,
+        "mean_energy_eV": 6.763570944295997,
+        "drift_velocity_m_per_s": 76971.83679763389,
+        "reduced_ionization_frequency_m3_per_s": 7.069758266016634e-17,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.6016852186805466e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 2.2724529550856556e-16,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 3.3501658255200575e-16,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 7.069758266016634e-17
+        },
+        "normalization_error": 1.1102230246251565e-16,
+        "minimum_state": -1.9265892249768314e-19,
+        "maximum_state": 0.001572726464990481,
+        "eepf_tail_ratio": 1.7769026104505737e-16,
+        "warning_count": 0
+      },
+      "rust": {
+        "converged": true,
+        "n_steps": 5800,
+        "xi_used": 0.7799999999999998,
+        "seconds": 0.18531509999957052,
+        "mean_energy_eV": 6.763570944296056,
+        "drift_velocity_m_per_s": 76971.8367976348,
+        "reduced_ionization_frequency_m3_per_s": 7.069758266016701e-17,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.6016852186805612e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 2.272452955085676e-16,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 3.350165825520088e-16,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 7.069758266016701e-17
+        },
+        "normalization_error": 9.103828801926284e-15,
+        "minimum_state": -1.9265892249768622e-19,
+        "maximum_state": 0.0015727264649904983,
+        "eepf_tail_ratio": 1.7769026104505848e-16,
+        "warning_count": 0
+      },
+      "comparison": {
+        "energy_grid_exact": true,
+        "rate_keys_match": true,
+        "steps_match": true,
+        "xi_absolute_error": 0.0,
+        "distribution_l1": 9.414780609237697e-15,
+        "eedf_relative_l1": 9.262841641511214e-15,
+        "eepf_relative_l1": 9.290200242170283e-15,
+        "scalar_relative_errors": {
+          "mean_energy": 8.798304122187617e-15,
+          "drift_velocity": 1.1721413723447332e-14,
+          "reduced_ionization_frequency": 9.589116274074108e-15
+        },
+        "max_scalar_relative_error": 1.1721413723447332e-14,
+        "rate_relative_errors": {
+          "Ar:E + Ar -> E + Ar, Elastic": 9.141158468680367e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 8.895480388735396e-15,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 9.124431944370604e-15,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 9.589116274074108e-15
+        },
+        "max_rate_relative_error": 9.589116274074108e-15
+      },
+      "speedup": 2.539754720470694
+    },
+    "blending_10Td": {
+      "reference": {
+        "converged": true,
+        "n_steps": 102800,
+        "xi_used": 0.94,
+        "seconds": 21.399924999999712,
+        "mean_energy_eV": 5.273777802328927,
+        "drift_velocity_m_per_s": 10556.31118928807,
+        "reduced_ionization_frequency_m3_per_s": 8.159304405680995e-23,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.1723246139667226e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 3.270575974021068e-18,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 4.874645406316044e-18,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 8.159304405680995e-23
+        },
+        "normalization_error": 1.1102230246251565e-16,
+        "minimum_state": 1.741406710634023e-89,
+        "maximum_state": 0.001964228537724403,
+        "eepf_tail_ratio": 1.8173553932468633e-85,
+        "warning_count": 0
+      },
+      "rust": {
+        "converged": true,
+        "n_steps": 102800,
+        "xi_used": 0.94,
+        "seconds": 8.787173900000198,
+        "mean_energy_eV": 5.273777802328995,
+        "drift_velocity_m_per_s": 10556.311189288015,
+        "reduced_ionization_frequency_m3_per_s": 8.159304405681283e-23,
+        "rate_coefficients_m3_per_s": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.1723246139667443e-13,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 3.2705759740212006e-18,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 4.874645406316242e-18,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 8.159304405681283e-23
+        },
+        "normalization_error": 3.3306690738754696e-15,
+        "minimum_state": 1.741406710634086e-89,
+        "maximum_state": 0.001964228537724386,
+        "eepf_tail_ratio": 1.8173553932469325e-85,
+        "warning_count": 0
+      },
+      "comparison": {
+        "energy_grid_exact": true,
+        "rate_keys_match": true,
+        "steps_match": true,
+        "xi_absolute_error": 0.0,
+        "distribution_l1": 1.687664395913616e-14,
+        "eedf_relative_l1": 1.689206547025345e-14,
+        "eepf_relative_l1": 1.3821392714831412e-14,
+        "scalar_relative_errors": {
+          "mean_energy": 1.2967883911739228e-14,
+          "drift_velocity": 5.1693892997157784e-15,
+          "reduced_ionization_frequency": 3.529665050257595e-14
+        },
+        "max_scalar_relative_error": 3.529665050257595e-14,
+        "rate_relative_errors": {
+          "Ar:E + Ar -> E + Ar, Elastic": 1.8518294210530057e-14,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [1]": 4.051395877250547e-14,
+          "Ar:E + Ar -> E + Ar*(11.55eV), Excitation [2]": 4.061538466499968e-14,
+          "Ar:E + Ar -> E + E + Ar+, Ionization": 3.529665050257595e-14
+        },
+        "max_rate_relative_error": 4.061538466499968e-14
+      },
+      "speedup": 2.435359222832637
+    }
+  }
+}

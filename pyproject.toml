@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "boltzpmp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Rust-accelerated electron Boltzmann solver by the propagator method"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,6 @@ license = "MIT"
 authors = [{ name = "TK" }]
 dependencies = ["numpy>=1.22"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Rust",
@@ -36,7 +35,9 @@ features = ["pyo3/extension-module"]
 include = [
   { path = "LICENSE", format = "sdist" },
   { path = "CHANGELOG.md", format = "sdist" },
-  { path = "MIGRATION_PLAN.md", format = "sdist" },
+  { path = "VALIDATION.md", format = "sdist" },
+  { path = "benchmarks/validate_lxcat.py", format = "sdist" },
+  { path = "reference/lxcat_morgan_argon_validation.json", format = "sdist" },
 ]
 exclude = ["python/boltzpmp/*.pdb", "python/boltzpmp/*.pyd"]
 
