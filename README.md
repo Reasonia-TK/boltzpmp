@@ -6,12 +6,10 @@ Pythonパッケージです。DC・RF電場における電子エネルギー分�
 
 ## インストール
 
-Python 3.10以降が必要です。TestPyPIの検証用パッケージは次のコマンドで
-インストールできます。
+Python 3.10以降が必要です。
 
 ```powershell
-uv pip install "numpy>=1.22"
-uv pip install --no-deps --index-url https://test.pypi.org/simple/ boltzpmp
+uv pip install boltzpmp
 ```
 
 ## クイックスタート
@@ -97,18 +95,26 @@ uv run --with scipy --extra test python benchmarks\validate_lxcat.py `
 
 現在のテスト構成はRust単体テスト4件、Python API・物理テスト15件です。
 
-## TestPyPI公開
+## パッケージ公開
 
-`.github/workflows/wheels.yml` を手動実行し、`publish_testpypi` を有効にすると、
-3 OS向けwheelとsdistの全ビルド成功後にTestPyPIへ公開します。公開にはGitHubの
-`testpypi` EnvironmentとOIDC Trusted Publishingを使用します。
+`.github/workflows/wheels.yml` を手動実行すると、Windows、Linux、macOS向けwheelと
+sdistを作成します。全ビルド成功後、選択した公開先へOIDC Trusted Publishingで
+配布します。
 
-| 項目 | 値 |
-|---|---|
-| Owner | `Reasonia-TK` |
-| Repository | `boltzpmp` |
-| Workflow | `wheels.yml` |
-| Environment | `testpypi` |
+| workflow入力 | 公開先 | GitHub Environment |
+|---|---|---|
+| `publish_testpypi` | TestPyPI | `testpypi` |
+| `publish_pypi` | PyPI | `pypi` |
+
+TestPyPI版を確認する場合は、依存パッケージと本体の取得先を分けます。
+
+```powershell
+uv pip install "numpy>=1.22"
+uv pip install --no-deps --index-url https://test.pypi.org/simple/ boltzpmp
+```
+
+Trusted PublisherにはOwner `Reasonia-TK`、Repository `boltzpmp`、Workflow
+`wheels.yml` と、公開先に対応するEnvironmentを設定します。
 
 ## ライセンス
 

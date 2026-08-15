@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - 2026-08-15
+
+- PyPI向けOIDC Trusted Publishingジョブを追加。
+- 通常のPyPIインストール手順と公開先ごとのworkflow入力を文書化。
+
 ## 0.1.2 - 2026-08-15
 
 - TestPyPIとPyPIを分離して使用するuvインストール手順へ更新。

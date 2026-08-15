@@ -8,6 +8,11 @@ on:
         required: true
         default: false
         type: boolean
+      publish_pypi:
+        description: Publish the completed artifact set to PyPI
+        required: true
+        default: false
+        type: boolean
   push:
     tags: ["v*"]
 
@@ -65,3 +70,21 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi }}
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/boltzpmp
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: "*"
+          path: dist
+          merge-multiple: true
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
