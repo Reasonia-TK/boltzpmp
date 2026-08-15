@@ -18,6 +18,20 @@ uv run --extra test pytest -q
 cargo test --workspace
 ```
 
+## TestPyPI公開
+
+`.github/workflows/wheels.yml` を手動実行し、`publish_testpypi` を有効にすると、
+3 OS向けwheelとsdistの全ビルド成功後にTestPyPIへ公開します。公開ジョブは
+GitHubの `testpypi` EnvironmentとOIDC Trusted Publishingを使用し、APIトークンを
+リポジトリへ保存しません。TestPyPI側のpublisherには次を設定してください。
+
+| 項目 | 値 |
+|---|---|
+| Owner | `Reasonia-TK` |
+| Repository | `boltzpmp` |
+| Workflow | `wheels.yml` |
+| Environment | `testpypi` |
+
 ## クイックスタート
 
 ```python

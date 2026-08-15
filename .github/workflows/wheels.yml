@@ -2,6 +2,12 @@ name: Build release artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_testpypi:
+        description: Publish the completed artifact set to TestPyPI
+        required: true
+        default: false
+        type: boolean
   push:
     tags: ["v*"]
 
@@ -39,3 +45,23 @@ jobs:
         with:
           name: sdist
           path: dist/*
+
+  publish-testpypi:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_testpypi }}
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/boltzpmp
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: "*"
+          path: dist
+          merge-multiple: true
+      - name: Publish package distributions to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
