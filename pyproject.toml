@@ -39,7 +39,11 @@ include = [
   { path = "benchmarks/validate_lxcat.py", format = "sdist" },
   { path = "reference/lxcat_morgan_argon_validation.json", format = "sdist" },
 ]
-exclude = ["python/boltzpmp/*.pdb", "python/boltzpmp/*.pyd"]
+exclude = [
+  "python/boltzpmp/*.pdb",
+  "python/boltzpmp/*.pyd",
+  ".codex/handovers/**",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
