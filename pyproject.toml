@@ -1,0 +1,48 @@
+[build-system]
+requires = ["maturin>=1.10,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "boltzpm2"
+version = "0.1.0"
+description = "Rust-accelerated electron Boltzmann solver by the propagator method"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "TK" }]
+dependencies = ["numpy>=1.22"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+Homepage = "https://github.com/Reasonia-TK/boltzpmp"
+Repository = "https://github.com/Reasonia-TK/boltzpmp"
+Issues = "https://github.com/Reasonia-TK/boltzpmp/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8", "maturin>=1.10,<2.0"]
+
+[tool.maturin]
+manifest-path = "rust/boltzpm-py/Cargo.toml"
+python-source = "python"
+module-name = "boltzpm2._core"
+bindings = "pyo3"
+features = ["pyo3/extension-module"]
+include = [
+  { path = "LICENSE", format = "sdist" },
+  { path = "CHANGELOG.md", format = "sdist" },
+  { path = "MIGRATION_PLAN.md", format = "sdist" },
+]
+exclude = ["python/boltzpm2/*.pdb", "python/boltzpm2/*.pyd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:EEPF at eps_max.*:UserWarning:tests.physics.test_parallel",
+  "ignore:EEPF at eps_max.*:UserWarning:boltzpm2.parallel",
+]

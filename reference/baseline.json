@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "implementation": "boltzpm-python",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "logical_cpu_count": 16,
+  "cases": [
+    {
+      "case": "small",
+      "eps_max_eV": 6.0,
+      "d_eps_eV": 0.03,
+      "n_theta": 30,
+      "steps": 20000,
+      "n_eps": 200,
+      "n_cells": 6000,
+      "repeats": 3,
+      "durations_seconds": [
+        1.1684565999998995,
+        1.167931899999985,
+        1.217918599999848
+      ],
+      "median_seconds": 1.1684565999998995,
+      "steps_per_second": 17116.596371659605,
+      "cell_updates_per_second": 102699578.22995764,
+      "final_sum": 1.0,
+      "final_min": 4.3889829395625756e-08,
+      "final_max": 0.0007816576871251892
+    },
+    {
+      "case": "representative",
+      "eps_max_eV": 8.0,
+      "d_eps_eV": 0.013333333333333334,
+      "n_theta": 90,
+      "steps": 5000,
+      "n_eps": 600,
+      "n_cells": 54000,
+      "repeats": 3,
+      "durations_seconds": [
+        3.4712677999998505,
+        3.900587200000018,
+        3.7256035999998858
+      ],
+      "median_seconds": 3.7256035999998858,
+      "steps_per_second": 1342.0644107172736,
+      "cell_updates_per_second": 72471478.17873278,
+      "final_sum": 0.9999999999999999,
+      "final_min": 2.378237170024559e-10,
+      "final_max": 0.00011470127336718266
+    }
+  ]
+}

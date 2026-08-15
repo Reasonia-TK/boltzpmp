@@ -1,0 +1,11 @@
+/.uv-cache/
+/.venv/
+/target/
+*.pyd
+*.so
+*.dll
+*.pdb
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+dist/

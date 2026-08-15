@@ -1,0 +1,12 @@
+[package]
+name = "boltzpm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Numerical core for the boltzpm2 propagator-method Boltzmann solver"
+
+[dependencies]
+rayon.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "implementation": "boltzpm2-rust-release",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "logical_cpu_count": 16,
+  "cases": [
+    {
+      "case": "small",
+      "eps_max_eV": 6.0,
+      "d_eps_eV": 0.03,
+      "n_theta": 30,
+      "steps": 20000,
+      "n_eps": 200,
+      "n_cells": 6000,
+      "repeats": 3,
+      "parallel": true,
+      "durations_seconds": [
+        2.8595562000000427,
+        2.7923570000002655,
+        2.8850640999999086
+      ],
+      "median_seconds": 2.8595562000000427,
+      "steps_per_second": 6994.092300056806,
+      "cell_updates_per_second": 41964553.80034084,
+      "final_sum": 1.0,
+      "final_min": 4.388982939562488e-08,
+      "final_max": 0.0007816576871251888
+    },
+    {
+      "case": "representative",
+      "eps_max_eV": 8.0,
+      "d_eps_eV": 0.013333333333333334,
+      "n_theta": 90,
+      "steps": 5000,
+      "n_eps": 600,
+      "n_cells": 54000,
+      "repeats": 3,
+      "parallel": true,
+      "durations_seconds": [
+        1.5987390000000232,
+        1.6131390999998985,
+        1.633730999999898
+      ],
+      "median_seconds": 1.6131390999998985,
+      "steps_per_second": 3099.546716089341,
+      "cell_updates_per_second": 167375522.6688244,
+      "final_sum": 1.0,
+      "final_min": 2.3782371700245735e-10,
+      "final_max": 0.00011470127336718272
+    }
+  ]
+}
