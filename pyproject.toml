@@ -37,6 +37,7 @@ include = [
   { path = "CHANGELOG.md", format = "sdist" },
   { path = "VALIDATION.md", format = "sdist" },
   { path = "benchmarks/validate_lxcat.py", format = "sdist" },
+  { path = "examples/export_comsol_eedf.py", format = "sdist" },
   { path = "reference/lxcat_morgan_argon_validation.json", format = "sdist" },
 ]
 exclude = [
