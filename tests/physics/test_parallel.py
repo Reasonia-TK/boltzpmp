@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from boltzpm2 import CrossSection, Gas, Mixture, PMSolver, solve_dc_sweep
+from boltzpmp import CrossSection, Gas, Mixture, PMSolver, solve_dc_sweep
 
 
 def solver() -> PMSolver:

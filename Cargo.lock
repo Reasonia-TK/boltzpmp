@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "boltzpm-core"
+name = "boltzpmp-core"
 version = "0.1.0"
 dependencies = [
  "rayon",
@@ -11,10 +11,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "boltzpm-py"
+name = "boltzpmp-py"
 version = "0.1.0"
 dependencies = [
- "boltzpm-core",
+ "boltzpmp-core",
  "pyo3",
 ]
 

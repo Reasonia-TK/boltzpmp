@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "boltzpm2"
+name = "boltzpmp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

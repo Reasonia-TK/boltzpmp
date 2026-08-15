@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from boltzpm2 import CrossSection, Gas, Mixture, PMSolver, load_argon
+from boltzpmp import CrossSection, Gas, Mixture, PMSolver, load_argon
 
 
 ROOT = Path(__file__).resolve().parents[2]

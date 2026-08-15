@@ -10,8 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
-from boltzpm2 import PMSolver, load_argon
-from boltzpm2.constants import E_CHARGE, M_E, TOWNSEND
+from boltzpmp import PMSolver, load_argon
+from boltzpmp.constants import E_CHARGE, M_E, TOWNSEND
 
 
 def main() -> None:

@@ -1,4 +1,4 @@
-# boltzpm2 移植計画
+# boltzpmp 移植計画
 
 ## 目的
 
@@ -18,13 +18,13 @@ wheelとして配布可能にする。
 ## 構成
 
 ```text
-boltzpm2/
+boltzpmp/
   Cargo.toml
   pyproject.toml
   rust/
-    boltzpm-core/       # Python非依存の数値計算
-    boltzpm-py/         # PyO3バインディング
-  python/boltzpm2/      # 公開Python API
+    boltzpmp-core/      # Python非依存の数値計算
+    boltzpmp-py/        # PyO3バインディング
+  python/boltzpmp/      # 公開Python API
   tests/
     parity/             # 旧Python版との比較
     physics/            # 保存則と物理的性質
@@ -43,8 +43,8 @@ boltzpm2/
 
 ### 1. Rust/Pythonプロジェクトの構築
 
-- Cargo workspaceを `boltzpm-core` と `boltzpm-py` に分離する。
-- Maturin mixed projectとして `boltzpm2._core` を生成する。
+- Cargo workspaceを `boltzpmp-core` と `boltzpmp-py` に分離する。
+- Maturin mixed projectとして `boltzpmp._core` を生成する。
 - `cargo test` とPython import smoke testを通す。
 
 ### 2. 数値部品の移植
@@ -96,7 +96,7 @@ boltzpm2/
 
 ## 公開前の判断事項
 
-- 開発中の配布名・import名は `boltzpm2` とする。
+- 配布名・import名は `boltzpmp` とする。
 - `abi3-py310` の成立を早期検証し、難しい場合はPython版別wheelへ切り替える。
 - Gitリポジトリ作成、GitHub連携、TestPyPI/PyPI公開は別途承認後に行う。
 

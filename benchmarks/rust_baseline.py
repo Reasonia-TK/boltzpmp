@@ -12,8 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-from boltzpm2 import PMSolver, load_argon
-from boltzpm2.constants import E_CHARGE, M_E, TOWNSEND
+from boltzpmp import PMSolver, load_argon
+from boltzpmp.constants import E_CHARGE, M_E, TOWNSEND
 
 
 CASES = {
@@ -83,7 +83,7 @@ def main() -> None:
     parallel = {"auto": None, "true": True, "false": False}[args.parallel]
     result = {
         "schema_version": 1,
-        "implementation": "boltzpm2-rust-release",
+        "implementation": "boltzpmp-rust-release",
         "platform": platform.platform(),
         "logical_cpu_count": os.cpu_count(),
         "cases": [run_case(name, args.repeats, parallel) for name in names],

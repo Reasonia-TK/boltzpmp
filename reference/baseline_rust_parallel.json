@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "implementation": "boltzpm2-rust-release",
+  "implementation": "boltzpmp-rust-release",
   "platform": "Windows-11-10.0.26200-SP0",
   "logical_cpu_count": 16,
   "cases": [

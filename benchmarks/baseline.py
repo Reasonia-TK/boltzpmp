@@ -1,4 +1,4 @@
-"""boltzpm2移植前後で同じ条件を測る固定ステップベンチマーク。"""
+"""boltzpmp移植前後で同じ条件を測る固定ステップベンチマーク。"""
 
 from __future__ import annotations
 

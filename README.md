@@ -1,6 +1,6 @@
-# boltzpm2
+# boltzpmp
 
-`boltzpm2` は、プロパゲータ法で電子ボルツマン方程式を解く `boltzpm` の
+`boltzpmp` は、プロパゲータ法で電子ボルツマン方程式を解く `boltzpm` の
 Rust移植版です。数値計算コアをRustで実装し、Pythonから既存版に近いAPIで利用
 できることを目標としています。
 
@@ -21,7 +21,7 @@ cargo test --workspace
 ## クイックスタート
 
 ```python
-import boltzpm2 as bp
+import boltzpmp as bp
 
 mixture = bp.load_argon()
 solver = bp.PMSolver(

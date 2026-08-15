@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import boltzpm2 as bp
+import boltzpmp as bp
 
 
 def main() -> None:

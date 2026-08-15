@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/boltzpm-core", "rust/boltzpm-py"]
+members = ["rust/boltzpmp-core", "rust/boltzpmp-py"]
 resolver = "2"
 
 [workspace.package]
@@ -10,7 +10,7 @@ authors = ["TK"]
 repository = "https://github.com/Reasonia-TK/boltzpmp"
 
 [workspace.dependencies]
-boltzpm-core = { path = "rust/boltzpm-core" }
+boltzpmp-core = { path = "rust/boltzpmp-core" }
 pyo3 = { version = "0.29", features = ["abi3-py310"] }
 rayon = "1.11"
 thiserror = "2"

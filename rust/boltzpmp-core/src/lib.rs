@@ -1,4 +1,4 @@
-//! Pythonに依存しないboltzpm2数値計算コア。
+//! Pythonに依存しないboltzpmp数値計算コア。
 
 mod constants;
 mod mesh;

@@ -2,6 +2,7 @@
 
 ## 0.1.0 - Unreleased
 
+- 配布名、import名、PyO3モジュール、Rust crateを `boltzpmp` 系へ統一。
 - Python非依存のRust数値コアを追加。
 - PyO3/Maturinによる `abi3-py310` Python拡張を追加。
 - メッシュ、移流、衝突、DC、RFソルバーを移植。

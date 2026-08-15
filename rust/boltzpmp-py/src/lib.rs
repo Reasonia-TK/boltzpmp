@@ -1,4 +1,4 @@
-use ::boltzpm_core::{
+use ::boltzpmp_core::{
     CoreSolver, DcOptions, DcResult, ProcessKind, ProcessSpec, RfOptions, RfResult, SolverError,
     SwarmScalars,
 };
