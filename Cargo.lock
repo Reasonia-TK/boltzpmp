@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "boltzpmp-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rayon",
  "thiserror",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "boltzpmp-py"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "boltzpmp-core",
  "pyo3",

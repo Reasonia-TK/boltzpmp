@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-15T13:53:29.456579+00:00",
+  "generated_at": "2026-08-15T14:03:52.602017+00:00",
   "passed": true,
   "source": {
     "filename": "Ar電子衝突断面積.txt",
@@ -12,7 +12,7 @@
     "python": "3.12.11",
     "numpy": "2.5.2",
     "reference_package": "0.1.0",
-    "rust_package": "0.1.1"
+    "rust_package": "0.1.2"
   },
   "conditions": {
     "gas": "Ar",
@@ -122,7 +122,7 @@
         "converged": true,
         "n_steps": 4800,
         "xi_used": 0.0,
-        "seconds": 0.27315209999869694,
+        "seconds": 0.26669089999995776,
         "mean_energy_eV": 6.902640698938555,
         "drift_velocity_m_per_s": 77959.40761370951,
         "reduced_ionization_frequency_m3_per_s": 1.2413703847036547e-16,
@@ -142,7 +142,7 @@
         "converged": true,
         "n_steps": 4800,
         "xi_used": 0.0,
-        "seconds": 0.11912610000035784,
+        "seconds": 0.12610139999924286,
         "mean_energy_eV": 6.902640698938604,
         "drift_velocity_m_per_s": 77959.40761371054,
         "reduced_ionization_frequency_m3_per_s": 1.241370384703663e-16,
@@ -180,14 +180,14 @@
         },
         "max_rate_relative_error": 7.34971783456049e-15
       },
-      "speedup": 2.2929660250598016
+      "speedup": 2.1148924595726855
     },
     "upwind_50Td": {
       "reference": {
         "converged": true,
         "n_steps": 4000,
         "xi_used": 0.0,
-        "seconds": 0.22764199999983248,
+        "seconds": 0.22579140000016196,
         "mean_energy_eV": 6.206457581681061,
         "drift_velocity_m_per_s": 44699.01746041427,
         "reduced_ionization_frequency_m3_per_s": 1.896013847254284e-17,
@@ -207,7 +207,7 @@
         "converged": true,
         "n_steps": 4000,
         "xi_used": 0.0,
-        "seconds": 0.09911360000114655,
+        "seconds": 0.09935519999999087,
         "mean_energy_eV": 6.206457581681088,
         "drift_velocity_m_per_s": 44699.01746041458,
         "reduced_ionization_frequency_m3_per_s": 1.896013847254292e-17,
@@ -245,14 +245,14 @@
         },
         "max_rate_relative_error": 4.700655983114522e-15
       },
-      "speedup": 2.2967786458891526
+      "speedup": 2.2725675153407443
     },
     "upwind_10Td": {
       "reference": {
         "converged": true,
         "n_steps": 19600,
         "xi_used": 0.0,
-        "seconds": 1.1377513999996154,
+        "seconds": 1.0978068000003987,
         "mean_energy_eV": 5.173687733514704,
         "drift_velocity_m_per_s": 13020.608661008553,
         "reduced_ionization_frequency_m3_per_s": 6.763218400160146e-20,
@@ -272,7 +272,7 @@
         "converged": true,
         "n_steps": 19600,
         "xi_used": 0.0,
-        "seconds": 0.48021029999836173,
+        "seconds": 0.4715997999992396,
         "mean_energy_eV": 5.173687733514716,
         "drift_velocity_m_per_s": 13020.608661008548,
         "reduced_ionization_frequency_m3_per_s": 6.763218400160109e-20,
@@ -310,14 +310,14 @@
         },
         "max_rate_relative_error": 5.5173277668541825e-15
       },
-      "speedup": 2.3692773770231437
+      "speedup": 2.3278355928101937
     },
     "upwind_1Td": {
       "reference": {
         "converged": true,
         "n_steps": 149000,
         "xi_used": 0.0,
-        "seconds": 9.276578200000586,
+        "seconds": 10.3649848999994,
         "mean_energy_eV": 4.572910899375617,
         "drift_velocity_m_per_s": 1821.2114408215746,
         "reduced_ionization_frequency_m3_per_s": 9.960518366352477e-26,
@@ -337,7 +337,7 @@
         "converged": true,
         "n_steps": 149000,
         "xi_used": 0.0,
-        "seconds": 3.69923320000089,
+        "seconds": 3.5854349000001093,
         "mean_energy_eV": 4.572910899375531,
         "drift_velocity_m_per_s": 1821.2114408216366,
         "reduced_ionization_frequency_m3_per_s": 9.960518366352115e-26,
@@ -375,14 +375,14 @@
         },
         "max_rate_relative_error": 3.630355899383864e-14
       },
-      "speedup": 2.5077030018000364
+      "speedup": 2.890858484140678
     },
     "blending_100Td": {
       "reference": {
         "converged": true,
         "n_steps": 5800,
         "xi_used": 0.7799999999999998,
-        "seconds": 0.4706548999984079,
+        "seconds": 0.44961589999911666,
         "mean_energy_eV": 6.763570944295997,
         "drift_velocity_m_per_s": 76971.83679763389,
         "reduced_ionization_frequency_m3_per_s": 7.069758266016634e-17,
@@ -402,7 +402,7 @@
         "converged": true,
         "n_steps": 5800,
         "xi_used": 0.7799999999999998,
-        "seconds": 0.18531509999957052,
+        "seconds": 0.2091286000013497,
         "mean_energy_eV": 6.763570944296056,
         "drift_velocity_m_per_s": 76971.8367976348,
         "reduced_ionization_frequency_m3_per_s": 7.069758266016701e-17,
@@ -440,14 +440,14 @@
         },
         "max_rate_relative_error": 9.589116274074108e-15
       },
-      "speedup": 2.539754720470694
+      "speedup": 2.1499493612839893
     },
     "blending_10Td": {
       "reference": {
         "converged": true,
         "n_steps": 102800,
         "xi_used": 0.94,
-        "seconds": 21.399924999999712,
+        "seconds": 21.036038199999894,
         "mean_energy_eV": 5.273777802328927,
         "drift_velocity_m_per_s": 10556.31118928807,
         "reduced_ionization_frequency_m3_per_s": 8.159304405680995e-23,
@@ -467,7 +467,7 @@
         "converged": true,
         "n_steps": 102800,
         "xi_used": 0.94,
-        "seconds": 8.787173900000198,
+        "seconds": 8.579330999999002,
         "mean_energy_eV": 5.273777802328995,
         "drift_velocity_m_per_s": 10556.311189288015,
         "reduced_ionization_frequency_m3_per_s": 8.159304405681283e-23,
@@ -505,7 +505,7 @@
         },
         "max_rate_relative_error": 4.061538466499968e-14
       },
-      "speedup": 2.435359222832637
+      "speedup": 2.45194388700032
     }
   }
 }

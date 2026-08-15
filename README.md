@@ -10,8 +10,8 @@ Python 3.10以降が必要です。TestPyPIの検証用パッケージは次の�
 インストールできます。
 
 ```powershell
-uv pip install --index-url https://test.pypi.org/simple/ `
-  --extra-index-url https://pypi.org/simple/ boltzpmp
+uv pip install "numpy>=1.22"
+uv pip install --no-deps --index-url https://test.pypi.org/simple/ boltzpmp
 ```
 
 ## クイックスタート
