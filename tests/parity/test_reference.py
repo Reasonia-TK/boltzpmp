@@ -45,11 +45,14 @@ def reference_solver() -> PMSolver:
         N=METADATA["mixture"]["number_density"],
     )
     mesh = METADATA["mesh"]
+    # 旧Python版（冷たい気体、超弾性なし）の基準値と比べるので、0.2.0で既定になった物理モデルは切る
     return PMSolver(
         mixture,
         eps_max_eV=mesh["eps_max_eV"],
         d_eps_eV=mesh["d_eps_eV"],
         n_theta=mesh["n_theta"],
+        superelastic=False,
+        gas_heating=False,
     )
 
 

@@ -1,53 +1,52 @@
-"""Python APIへ公開する速度空間メッシュ。"""
+"""Python APIへ公開する速度空間メッシュ（計算はRustコア）。"""
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
-from .constants import speed_from_ev
+from . import _core
 
 
 class VelocityMesh:
-    """一定エネルギー幅の軸対称 `(energy, theta)` メッシュ。"""
+    """軸対称 `(energy, theta)` メッシュ。
+
+    `VelocityMesh(eps_max_eV, d_eps_eV, n_theta)` は一定エネルギー幅、
+    `VelocityMesh.from_edges(edges_eV, n_theta)` は任意のエネルギー境界（0 eVから）の格子。
+    非一様格子では `d_eps_eV` は None で、セル幅は `d_eps` にある。
+    """
 
     def __init__(self, eps_max_eV: float, d_eps_eV: float, n_theta: int = 90) -> None:
-        self.eps_max_eV = float(eps_max_eV)
-        self.d_eps_eV = float(d_eps_eV)
-        self.n_theta = int(n_theta)
-        self.n_eps = int(round(self.eps_max_eV / self.d_eps_eV))
-        if self.n_eps < 1:
-            raise ValueError("eps_max_eV / d_eps_eV must be >= 1")
-        if self.n_theta < 1:
-            raise ValueError("n_theta must be >= 1")
+        self._assign(_core.mesh_data(float(eps_max_eV), float(d_eps_eV), int(n_theta)))
 
-        self.eps_b = np.arange(self.n_eps + 1, dtype=float) * self.d_eps_eV
-        self.eps_c = (np.arange(self.n_eps, dtype=float) + 0.5) * self.d_eps_eV
-        self.v_b = speed_from_ev(self.eps_b)
-        self.v_c = speed_from_ev(self.eps_c)
-        self.d_theta = np.pi / self.n_theta
-        self.theta_b = np.arange(self.n_theta + 1, dtype=float) * self.d_theta
-        self.theta_c = (np.arange(self.n_theta, dtype=float) + 0.5) * self.d_theta
+    @classmethod
+    def from_edges(cls, edges_eV, n_theta: int = 90) -> VelocityMesh:
+        edges = np.asarray(edges_eV, dtype=float).ravel()
+        return cls._from_data(_core.mesh_data_from_edges(edges.tolist(), int(n_theta)))
 
-        dv3 = self.v_b[1:] ** 3 - self.v_b[:-1] ** 3
-        dcos = np.cos(self.theta_b[:-1]) - np.cos(self.theta_b[1:])
-        self.V = (2.0 / 3.0) * np.pi * np.outer(dv3, dcos)
+    @classmethod
+    def _from_data(cls, data: dict[str, Any]) -> VelocityMesh:
+        mesh = cls.__new__(cls)
+        mesh._assign(data)
+        return mesh
 
-        sin2_lo = np.sin(self.theta_b[:-1]) ** 2
-        sin2_hi = np.sin(self.theta_b[1:]) ** 2
-        max_sin2 = np.maximum(sin2_lo, sin2_hi)
-        straddles = (self.theta_b[:-1] <= np.pi / 2) & (
-            self.theta_b[1:] >= np.pi / 2
-        )
-        max_sin2 = np.where(straddles, 1.0, max_sin2)
-        sin2_diff = max_sin2 - np.minimum(sin2_lo, sin2_hi)
-        self.S_plus_eps = np.pi * np.outer(self.v_b[1:] ** 2, sin2_diff)
-        self.S_minus_eps = np.pi * np.outer(self.v_b[:-1] ** 2, sin2_diff)
-        dv2 = self.v_b[1:] ** 2 - self.v_b[:-1] ** 2
-        self.S_plus_theta = np.pi * np.outer(dv2, sin2_hi)
-        self.S_minus_theta = np.pi * np.outer(dv2, sin2_lo)
-        self.w_theta = dcos / 2.0
-        self.n_cells = self.n_eps * self.n_theta
+    def _assign(self, data: dict[str, Any]) -> None:
+        self.eps_max_eV = float(data["eps_max_eV"])
+        self.d_eps_eV = None if data["d_eps_eV"] is None else float(data["d_eps_eV"])
+        self.n_eps = int(data["n_eps"])
+        self.n_theta = int(data["n_theta"])
+        self.n_cells = int(data["n_cells"])
         self.shape = (self.n_eps, self.n_theta)
+        self.d_theta = float(data["d_theta"])
+        for name in ("eps_b", "eps_c", "d_eps", "v_b", "v_c", "theta_b", "theta_c", "w_theta"):
+            setattr(self, name, np.asarray(data[name], dtype=float))
+        for name in ("V", "S_plus_eps", "S_minus_eps", "S_plus_theta", "S_minus_theta"):
+            setattr(self, name, np.asarray(data[name], dtype=float).reshape(self.shape))
+
+    @property
+    def is_uniform(self) -> bool:
+        return self.d_eps_eV is not None
 
     def idx(self, i, j):
         return np.asarray(i) * self.n_theta + np.asarray(j)
@@ -55,3 +54,15 @@ class VelocityMesh:
     def unravel(self, k):
         k = np.asarray(k)
         return k // self.n_theta, k % self.n_theta
+
+
+def graded_energy_grid(eps_max_eV: float, d_eps_min_eV: float, eps_uniform_eV: float) -> np.ndarray:
+    """低エネルギー側を細かくしたエネルギー境界（`PMSolver(energy_grid=...)`用）。
+
+    `eps_uniform_eV` までは `d_eps_min_eV` の一様刻み、その上は刻みを `sqrt(eps)` に比例して広げる。
+    回転・振動のしきい値が小さい分子では、一様格子より少ないセル数と大きな時間刻みで同じ精度が出る。
+    """
+    return np.asarray(
+        _core.graded_energy_edges(float(eps_max_eV), float(d_eps_min_eV), float(eps_uniform_eV)),
+        dtype=float,
+    )

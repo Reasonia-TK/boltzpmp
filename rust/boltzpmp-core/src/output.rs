@@ -9,8 +9,20 @@ pub struct SwarmScalars {
     pub eepf: Vec<f64>,
     pub mean_energy: f64,
     pub drift_velocity: f64,
+    /// 電離周波数/N = Σ（標的の割合 × 速度係数）。
     pub reduced_ionization_frequency: f64,
+    /// 付着周波数/N = Σ（標的の割合 × 速度係数）。
+    pub reduced_attachment_frequency: f64,
+    /// 過程ごとの速度係数（その過程の標的1個あたり）。キーは `気体名:過程名`。
     pub rate_coefficients: Vec<(String, f64)>,
+    /// 各過程の標的の、全数密度に対する割合。速度係数と掛けると全体への寄与になる。
+    pub fractions: Vec<(String, f64)>,
+    /// EEPFの最終セルの値と最大値の比。
+    pub eepf_tail_ratio: f64,
+}
+
+fn process_key(process: &ProcessSpec) -> String {
+    format!("{}:{}", process.gas_name, process.name)
 }
 
 pub fn compute_swarm(
@@ -37,24 +49,32 @@ pub fn compute_swarm(
         .sum();
     let eedf: Vec<_> = energy_density
         .iter()
-        .map(|value| value / mesh.d_eps_ev)
+        .zip(&mesh.d_eps)
+        .map(|(value, width)| value / width)
         .collect();
     let eepf: Vec<_> = eedf
         .iter()
         .zip(&mesh.eps_c)
         .map(|(value, energy)| value / energy.sqrt())
         .collect();
+    let peak = eepf.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let eepf_tail_ratio = eepf.last().copied().unwrap_or(0.0) / peak.max(1.0e-300);
 
     let mut reduced_ionization_frequency = 0.0;
+    let mut reduced_attachment_frequency = 0.0;
     let mut rate_coefficients = Vec::with_capacity(processes.len());
+    let mut fractions = Vec::with_capacity(processes.len());
     for process in processes {
         let rate = (0..mesh.n_eps)
             .map(|i| process.sigma[i] * mesh.v_c[i] * energy_density[i])
             .sum::<f64>();
-        if process.kind == ProcessKind::Ionization {
-            reduced_ionization_frequency += process.fraction * rate;
+        match process.kind {
+            ProcessKind::Ionization => reduced_ionization_frequency += process.fraction * rate,
+            ProcessKind::Attachment => reduced_attachment_frequency += process.fraction * rate,
+            _ => {}
         }
-        rate_coefficients.push((format!("{}:{}", process.gas_name, process.name), rate));
+        rate_coefficients.push((process_key(process), rate));
+        fractions.push((process_key(process), process.fraction));
     }
     SwarmScalars {
         eedf,
@@ -62,7 +82,10 @@ pub fn compute_swarm(
         mean_energy,
         drift_velocity,
         reduced_ionization_frequency,
+        reduced_attachment_frequency,
         rate_coefficients,
+        fractions,
+        eepf_tail_ratio,
     }
 }
 

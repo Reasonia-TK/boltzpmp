@@ -12,6 +12,13 @@ from .mesh import VelocityMesh
 
 @dataclass(kw_only=True)
 class SwarmResult:
+    """定常解。
+
+    `rate_coefficients` は過程ごとの速度係数（その過程の標的1個あたり、m³/s）で、キーは
+    `気体名:過程名`。混合気体全体への寄与は `fractions` の割合を掛けて足す。
+    `reduced_ionization_frequency` と `reduced_attachment_frequency` はその和（m³/s）。
+    """
+
     energy_grid: np.ndarray
     eedf: np.ndarray
     eepf: np.ndarray
@@ -24,7 +31,19 @@ class SwarmResult:
     mesh: VelocityMesh
     converged: bool
     n_steps: int
+    reduced_attachment_frequency: float = 0.0
+    fractions: dict[str, float] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def alpha_over_N(self) -> float:
+        """換算電離係数 α/N (m²)。"""
+        return self.reduced_ionization_frequency / self.drift_velocity
+
+    @property
+    def eta_over_N(self) -> float:
+        """換算付着係数 η/N (m²)。"""
+        return self.reduced_attachment_frequency / self.drift_velocity
 
 
 @dataclass(kw_only=True)

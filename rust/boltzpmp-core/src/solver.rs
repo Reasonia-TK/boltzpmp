@@ -5,7 +5,9 @@ use thiserror::Error;
 
 use crate::{
     AdvectionOperator, CollisionOperator, E_CHARGE, M_E, ProcessSpec, TOWNSEND, VelocityMesh,
+    mixture::Mixture,
     output::{SwarmScalars, cheap_scalars, compute_swarm, reduced_ionization_frequency},
+    processes::{ModelOptions, build_processes},
 };
 
 #[derive(Debug, Error)]
@@ -127,6 +129,19 @@ impl CoreSolver {
         number_density: f64,
         processes: Vec<ProcessSpec>,
     ) -> Result<Self, SolverError> {
+        let mesh =
+            VelocityMesh::new(eps_max_ev, d_eps_ev, n_theta).map_err(SolverError::InvalidInput)?;
+        Self::with_mesh(mesh, number_density, safety, parallel, processes)
+    }
+
+    /// 組み立て済みのメッシュ上の衝突過程から作る。
+    pub fn with_mesh(
+        mesh: VelocityMesh,
+        number_density: f64,
+        safety: f64,
+        parallel: bool,
+        processes: Vec<ProcessSpec>,
+    ) -> Result<Self, SolverError> {
         if !number_density.is_finite() || number_density <= 0.0 {
             return Err(SolverError::InvalidInput(
                 "number density must be finite and positive".into(),
@@ -135,8 +150,6 @@ impl CoreSolver {
         if !safety.is_finite() || safety <= 0.0 || safety >= 1.0 {
             return Err(SolverError::InvalidInput("safety must be in (0, 1)".into()));
         }
-        let mesh =
-            VelocityMesh::new(eps_max_ev, d_eps_ev, n_theta).map_err(SolverError::InvalidInput)?;
         let collision = CollisionOperator::new(&mesh, number_density, processes.clone())
             .map_err(SolverError::InvalidInput)?;
         Ok(Self {
@@ -149,6 +162,19 @@ impl CoreSolver {
         })
     }
 
+    /// 混合気体から作る。断面積のセル中心値、超弾性衝突、気体温度の効果、異方散乱をここで組み立てる。
+    pub fn from_mixture(
+        mixture: &Mixture,
+        mesh: VelocityMesh,
+        safety: f64,
+        parallel: bool,
+        options: ModelOptions,
+    ) -> Result<Self, SolverError> {
+        let processes =
+            build_processes(mixture, &mesh, options).map_err(SolverError::InvalidInput)?;
+        Self::with_mesh(mesh, mixture.number_density, safety, parallel, processes)
+    }
+
     pub fn initial_maxwell(&self, temperature_ev: f64) -> Result<Vec<f64>, SolverError> {
         if !temperature_ev.is_finite() || temperature_ev <= 0.0 {
             return Err(SolverError::InvalidInput(
@@ -157,8 +183,14 @@ impl CoreSolver {
         }
         let mut state = vec![0.0; self.mesh.n_cells];
         for i in 0..self.mesh.n_eps {
+            // 一様格子では幅が共通なので掛けない（0.1.3と同じ値にする）
+            let width = if self.mesh.d_eps_ev.is_some() {
+                1.0
+            } else {
+                self.mesh.d_eps[i]
+            };
             let energy_part =
-                self.mesh.eps_c[i].sqrt() * (-self.mesh.eps_c[i] / temperature_ev).exp();
+                width * self.mesh.eps_c[i].sqrt() * (-self.mesh.eps_c[i] / temperature_ev).exp();
             for j in 0..self.mesh.n_theta {
                 state[self.mesh.idx(i, j)] = energy_part * self.mesh.w_theta[j];
             }
@@ -337,6 +369,31 @@ impl CoreSolver {
             if xi.abs() < 1.0e-12 {
                 xi = 0.0;
             }
+        }
+    }
+
+    /// 独立なDC計算を並列に解く。結果は入力順。`max_workers`が`None`ならRayonの既定数。
+    pub fn solve_dc_many(
+        &self,
+        options: Vec<DcOptions>,
+        max_workers: Option<usize>,
+    ) -> Result<Vec<Result<DcResult, SolverError>>, SolverError> {
+        let run = || {
+            options
+                .into_par_iter()
+                .map(|item| self.solve_dc(item))
+                .collect::<Vec<_>>()
+        };
+        match max_workers {
+            Some(0) => Err(SolverError::InvalidInput(
+                "max_workers must be positive".into(),
+            )),
+            Some(workers) => rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .map_err(|err| SolverError::InvalidInput(format!("thread pool: {err}")))
+                .map(|pool| pool.install(run)),
+            None => Ok(run()),
         }
     }
 
