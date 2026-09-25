@@ -94,30 +94,65 @@ struct SignedEdge {
     sign: f64,
 }
 
+/// 制限関数つきの面。面の密度は `f_u + φ(r) (f_c − f_u)`、`f_c` は ξ = 1 と同じ体積重みの中心値、
+/// `r = (f_u − f_uu) / (f_d − f_u)`、φ は van Leer の制限関数。
+#[derive(Clone, Copy, Debug)]
+struct LimitedEdge {
+    second_upstream: Option<usize>,
+    area: f64,
+    inv_volume_upstream: f64,
+    inv_volume_downstream: f64,
+    inv_volume_second: f64,
+    weight_upstream: f64,
+    weight_downstream: f64,
+}
+
+/// 移流の離散化。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AdvectionScheme {
+    /// 風上（ξ = 0）から中心差分（ξ = 1）までの線形な重み。
+    Linear(f64),
+    /// van Leer の制限関数による2次精度のTVDスキーム（負の値を作らない）。
+    VanLeer,
+}
+
 #[derive(Clone, Debug)]
 pub struct AdvectionOperator {
     edges: Vec<FluxEdge>,
+    limited: Option<Vec<LimitedEdge>>,
     cell_edges: Vec<Vec<SignedEdge>>,
     n_cells: usize,
 }
 
 impl AdvectionOperator {
     pub fn new(mesh: &VelocityMesh, xi: f64, sign: i8) -> Result<Self, String> {
+        Self::with_scheme(mesh, AdvectionScheme::Linear(xi), sign)
+    }
+
+    pub fn with_scheme(
+        mesh: &VelocityMesh,
+        scheme: AdvectionScheme,
+        sign: i8,
+    ) -> Result<Self, String> {
+        let xi = match scheme {
+            AdvectionScheme::Linear(xi) => xi,
+            AdvectionScheme::VanLeer => 0.0,
+        };
         if !(0.0..=1.0).contains(&xi) {
             return Err(format!("xi must be in [0, 1], got {xi}"));
         }
         if sign != 1 && sign != -1 {
             return Err("sign must be +1 or -1".into());
         }
-        let mut edges = Vec::with_capacity(
-            (mesh.n_eps.saturating_sub(1) * mesh.n_theta)
-                + (mesh.n_eps * mesh.n_theta.saturating_sub(1)),
-        );
+        let capacity = (mesh.n_eps.saturating_sub(1) * mesh.n_theta)
+            + (mesh.n_eps * mesh.n_theta.saturating_sub(1));
+        let mut edges = Vec::with_capacity(capacity);
+        let mut limited = Vec::with_capacity(capacity);
 
         let map = |k: usize| {
             if sign == 1 { k } else { mesh.mirror_idx(k) }
         };
-        let mut add_edge = |u: usize, d: usize, area: f64| {
+        let mut add_edge = |u: usize, d: usize, uu: Option<usize>, area: f64| {
             let u_mapped = map(u);
             let d_mapped = map(d);
             let volume_u = mesh.volume[u];
@@ -129,25 +164,39 @@ impl AdvectionOperator {
                 coeff_upstream: area * volume_d / (volume_u * denom),
                 coeff_downstream: area * xi * volume_u / (volume_d * denom),
             });
+            limited.push(LimitedEdge {
+                second_upstream: uu.map(map),
+                area,
+                inv_volume_upstream: 1.0 / volume_u,
+                inv_volume_downstream: 1.0 / volume_d,
+                inv_volume_second: uu.map_or(0.0, |k| 1.0 / mesh.volume[k]),
+                weight_upstream: volume_d / (volume_u + volume_d),
+                weight_downstream: volume_u / (volume_u + volume_d),
+            });
         };
 
         for i in 0..mesh.n_eps.saturating_sub(1) {
             for j in 0..mesh.n_theta {
                 let lower = mesh.idx(i, j);
                 let upper = mesh.idx(i + 1, j);
-                let (upstream, downstream) = if mesh.theta_c[j] < PI / 2.0 {
-                    (lower, upper)
+                let (upstream, downstream, second) = if mesh.theta_c[j] < PI / 2.0 {
+                    (lower, upper, (i >= 1).then(|| mesh.idx(i - 1, j)))
                 } else {
-                    (upper, lower)
+                    (
+                        upper,
+                        lower,
+                        (i + 2 < mesh.n_eps).then(|| mesh.idx(i + 2, j)),
+                    )
                 };
-                add_edge(upstream, downstream, mesh.s_plus_eps[lower]);
+                add_edge(upstream, downstream, second, mesh.s_plus_eps[lower]);
             }
         }
         for i in 0..mesh.n_eps {
             for j in 0..mesh.n_theta.saturating_sub(1) {
                 let downstream = mesh.idx(i, j);
                 let upstream = mesh.idx(i, j + 1);
-                add_edge(upstream, downstream, mesh.s_plus_theta[downstream]);
+                let second = (j + 2 < mesh.n_theta).then(|| mesh.idx(i, j + 2));
+                add_edge(upstream, downstream, second, mesh.s_plus_theta[downstream]);
             }
         }
         let mut cell_edges = vec![Vec::with_capacity(4); mesh.n_cells];
@@ -163,6 +212,7 @@ impl AdvectionOperator {
         }
         Ok(Self {
             edges,
+            limited: (scheme == AdvectionScheme::VanLeer).then_some(limited),
             cell_edges,
             n_cells: mesh.n_cells,
         })
@@ -172,6 +222,27 @@ impl AdvectionOperator {
         self.edges.len()
     }
 
+    #[inline]
+    fn flux(&self, index: usize, state: &[f64]) -> f64 {
+        let edge = &self.edges[index];
+        match &self.limited {
+            None => {
+                edge.coeff_upstream * state[edge.upstream]
+                    + edge.coeff_downstream * state[edge.downstream]
+            }
+            Some(limited) => {
+                let face = &limited[index];
+                let f_u = state[edge.upstream] * face.inv_volume_upstream;
+                let f_d = state[edge.downstream] * face.inv_volume_downstream;
+                let central = face.weight_upstream * f_u + face.weight_downstream * f_d;
+                let phi = face.second_upstream.map_or(0.0, |uu| {
+                    van_leer(f_u - state[uu] * face.inv_volume_second, f_d - f_u)
+                });
+                face.area * (f_u + phi * (central - f_u))
+            }
+        }
+    }
+
     pub fn apply(&self, state: &[f64], output: &mut [f64], edge_flux: &mut [f64], parallel: bool) {
         assert_eq!(state.len(), self.n_cells);
         assert_eq!(output.len(), self.n_cells);
@@ -179,11 +250,8 @@ impl AdvectionOperator {
         let flux = &mut edge_flux[..self.edges.len()];
         if parallel {
             flux.par_iter_mut()
-                .zip(self.edges.par_iter())
-                .for_each(|(value, edge)| {
-                    *value = edge.coeff_upstream * state[edge.upstream]
-                        + edge.coeff_downstream * state[edge.downstream];
-                });
+                .enumerate()
+                .for_each(|(index, value)| *value = self.flux(index, state));
             output
                 .par_iter_mut()
                 .zip(self.cell_edges.par_iter())
@@ -195,9 +263,8 @@ impl AdvectionOperator {
                 });
         } else {
             output.fill(0.0);
-            for edge in &self.edges {
-                let value = edge.coeff_upstream * state[edge.upstream]
-                    + edge.coeff_downstream * state[edge.downstream];
+            for (index, edge) in self.edges.iter().enumerate() {
+                let value = self.flux(index, state);
                 output[edge.upstream] -= value;
                 output[edge.downstream] += value;
             }
@@ -569,6 +636,17 @@ fn in_thermal_range(energy_ev: f64, kt_ev: f64) -> bool {
     energy_ev <= THERMAL_EXCHANGE_LIMIT * kt_ev
 }
 
+/// van Leer の制限関数 φ(r) = (r + |r|)/(1 + |r|)、r = upwind/downwind。
+/// 勾配の符号が変わる（極値）ところでは 0（風上差分）になる。
+#[inline]
+fn van_leer(upwind: f64, downwind: f64) -> f64 {
+    let product = upwind * downwind;
+    if product <= 0.0 {
+        return 0.0;
+    }
+    2.0 * product / (downwind * downwind + product)
+}
+
 /// B(z) = z / (exp(z) − 1)
 fn bernoulli(z: f64) -> f64 {
     if z.abs() < 1.0e-8 {
@@ -628,6 +706,58 @@ mod tests {
         op.apply(&state, &mut parallel, &mut edge_flux, true);
         for (a, b) in sequential.iter().zip(parallel) {
             assert!((a - b).abs() <= 1.0e-12 * a.abs().max(1.0));
+        }
+    }
+
+    #[test]
+    fn limiter_conserves_and_keeps_steps_positive() {
+        let mesh = VelocityMesh::new(8.0, 0.2, 16).unwrap();
+        let op = AdvectionOperator::with_scheme(&mesh, AdvectionScheme::VanLeer, 1).unwrap();
+        // 加速度1のときのCFL条件（出ていく面の面積の和）に安全係数0.2を掛けた時間刻み
+        let dt = 0.2
+            * (0..mesh.n_cells)
+                .map(|k| {
+                    let (i, j) = (k / mesh.n_theta, k % mesh.n_theta);
+                    let out_eps = if mesh.theta_c[j] < PI / 2.0 {
+                        if i + 1 == mesh.n_eps {
+                            0.0
+                        } else {
+                            mesh.s_plus_eps[k]
+                        }
+                    } else {
+                        mesh.s_minus_eps[k]
+                    };
+                    mesh.volume[k] / (out_eps + mesh.s_minus_theta[k])
+                })
+                .fold(f64::INFINITY, f64::min);
+        // 階段状の分布（急な段差は2次精度の中心差分では負の値を生む）
+        let mut state: Vec<f64> = (0..mesh.n_cells)
+            .map(|k| {
+                if k / mesh.n_theta < 8 {
+                    mesh.volume[k]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let total: f64 = state.iter().sum();
+        let mut output = vec![0.0; mesh.n_cells];
+        let mut edge_flux = vec![0.0; op.edge_count()];
+        for _ in 0..300 {
+            op.apply(&state, &mut output, &mut edge_flux, false);
+            for (value, change) in state.iter_mut().zip(&output) {
+                *value += dt * change;
+            }
+            let max = state.iter().copied().fold(0.0, f64::max);
+            assert!(state.iter().all(|value| *value >= -1.0e-14 * max));
+        }
+        assert!((state.iter().sum::<f64>() - total).abs() < 1.0e-12 * total);
+        // 並列版も同じ流束を与える
+        let mut parallel = vec![0.0; mesh.n_cells];
+        op.apply(&state, &mut output, &mut edge_flux, false);
+        op.apply(&state, &mut parallel, &mut edge_flux, true);
+        for (a, b) in output.iter().zip(&parallel) {
+            assert!((a - b).abs() <= 1.0e-12 * a.abs().max(1.0e-30));
         }
     }
 

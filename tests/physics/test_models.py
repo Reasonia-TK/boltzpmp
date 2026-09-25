@@ -87,6 +87,21 @@ def test_gas_heating_thermalizes_elastic_gas() -> None:
     assert solve(cold, 0.01, tol=1e-6, init_T_eV=0.035).mean_energy < 0.5 * THERMAL_MEAN
 
 
+def test_limiter_scheme_removes_upwind_heating() -> None:
+    mixture = Mixture([Gas("G", 1.0, [elastic()])], N=3.2e22, T_K=300.0)
+    solver = PMSolver(mixture, eps_max_eV=0.3, d_eps_eV=0.005, n_theta=8)
+    eps = solver.mesh.eps_c
+    weight = np.sqrt(eps) * np.exp(-eps / (K_B_EV * 300.0))
+    target = float(np.sum(eps * weight) / np.sum(weight))
+    upwind = solve(solver, 0.01, tol=1e-6, init_T_eV=0.035)
+    limiter = solve(solver, 0.01, tol=1e-6, init_T_eV=0.035, scheme="limiter")
+    assert limiter.converged
+    assert np.isnan(limiter.xi_used)
+    # upwind の数値拡散は刻みに比例して電子を温める（ここでは約6%）
+    assert upwind.mean_energy / target - 1.0 > 0.03
+    assert abs(limiter.mean_energy / target - 1.0) < 0.01
+
+
 def test_process_list_and_fractions() -> None:
     solver = PMSolver(rotor_mixture(), eps_max_eV=0.6, d_eps_eV=0.002, n_theta=8)
     names = [process["name"] for process in solver.processes()]

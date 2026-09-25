@@ -18,7 +18,9 @@ pub use constants::{AMU, E_CHARGE, K_B, M_E, TOWNSEND, kelvin_to_ev, speed_from_
 pub use lxcat::{CrossSection, Kind, LevelState, ParseError, Table};
 pub use mesh::{VelocityMesh, graded_edges};
 pub use mixture::{Gas, Mixture, Populations};
-pub use operators::{AdvectionOperator, CollisionOperator, ProcessKind, ProcessSpec};
+pub use operators::{
+    AdvectionOperator, AdvectionScheme, CollisionOperator, ProcessKind, ProcessSpec,
+};
 pub use output::SwarmScalars;
 pub use processes::ModelOptions;
 pub use solver::{CoreSolver, DcOptions, DcResult, RfOptions, RfResult, SolverError};

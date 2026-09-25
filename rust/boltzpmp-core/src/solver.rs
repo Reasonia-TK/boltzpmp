@@ -4,7 +4,8 @@ use rayon::prelude::*;
 use thiserror::Error;
 
 use crate::{
-    AdvectionOperator, CollisionOperator, E_CHARGE, M_E, ProcessSpec, TOWNSEND, VelocityMesh,
+    AdvectionOperator, AdvectionScheme, CollisionOperator, E_CHARGE, M_E, ProcessSpec, TOWNSEND,
+    VelocityMesh,
     mixture::Mixture,
     output::{SwarmScalars, cheap_scalars, compute_swarm, reduced_ionization_frequency},
     processes::{ModelOptions, build_processes},
@@ -323,31 +324,19 @@ impl CoreSolver {
         let dt = options.dt.unwrap_or(self.auto_dt(acceleration)?);
         validate_dt(dt)?;
 
-        let fixed_xi = if options.scheme == "upwind" {
-            Some(0.0)
-        } else if let Some(xi) = options.xi {
-            Some(xi)
-        } else if options.scheme == "blending" {
-            None
-        } else {
-            return Err(SolverError::InvalidInput(format!(
-                "unknown scheme: {}",
-                options.scheme
-            )));
-        };
-
-        let mut xi = fixed_xi.unwrap_or(1.0);
+        let (mut advection, searching) = choose_scheme(&options.scheme, options.xi)?;
         loop {
             let march = self.march_dc(
                 &initial,
                 acceleration,
                 dt,
-                xi,
+                advection,
                 options.tol,
                 options.max_steps,
                 options.check_every,
             )?;
-            if !march.negative || fixed_xi.is_some() || xi <= 0.0 {
+            let xi = xi_of(advection);
+            if !march.negative || !searching || xi <= 0.0 {
                 if march.negative {
                     return Err(SolverError::NegativeState {
                         step: march.steps,
@@ -365,10 +354,7 @@ impl CoreSolver {
                     acceleration,
                 });
             }
-            xi = (xi - 0.02).max(0.0);
-            if xi.abs() < 1.0e-12 {
-                xi = 0.0;
-            }
+            advection = AdvectionScheme::Linear(lower_xi(xi));
         }
     }
 
@@ -403,13 +389,13 @@ impl CoreSolver {
         initial: &[f64],
         acceleration: f64,
         dt: f64,
-        xi: f64,
+        advection: AdvectionScheme,
         tol: f64,
         max_steps: usize,
         check_every: usize,
     ) -> Result<MarchResult, SolverError> {
-        let operator =
-            AdvectionOperator::new(&self.mesh, xi, 1).map_err(SolverError::InvalidInput)?;
+        let operator = AdvectionOperator::with_scheme(&self.mesh, advection, 1)
+            .map_err(SolverError::InvalidInput)?;
         let mut state = initial.to_vec();
         normalize(&mut state, 0)?;
         let mut workspace = Workspace::new(&self.mesh, operator.edge_count());
@@ -573,21 +559,9 @@ impl CoreSolver {
                 "steps_per_cycle must be positive".into(),
             ));
         }
-        let fixed_xi = if options.scheme == "upwind" {
-            Some(0.0)
-        } else if let Some(xi) = options.xi {
-            Some(xi)
-        } else if options.scheme == "blending" {
-            None
-        } else {
-            return Err(SolverError::InvalidInput(format!(
-                "unknown scheme: {}",
-                options.scheme
-            )));
-        };
-
-        let mut xi = fixed_xi.unwrap_or(1.0);
+        let (mut advection, searching) = choose_scheme(&options.scheme, options.xi)?;
         loop {
+            let xi = xi_of(advection);
             match self.run_rf_cycles(
                 &initial,
                 acceleration_peak,
@@ -595,20 +569,17 @@ impl CoreSolver {
                 options.frequency_hz,
                 dt,
                 steps_per_cycle,
-                xi,
+                advection,
                 options.tol,
                 options.cycles_max,
                 options.n_store,
             )? {
                 RfMarch::Complete(result) => return Ok(*result),
-                RfMarch::Negative { step } if fixed_xi.is_some() || xi <= 0.0 => {
+                RfMarch::Negative { step } if !searching || xi <= 0.0 => {
                     return Err(SolverError::NegativeState { step, xi });
                 }
                 RfMarch::Negative { .. } => {
-                    xi = (xi - 0.02).max(0.0);
-                    if xi.abs() < 1.0e-12 {
-                        xi = 0.0;
-                    }
+                    advection = AdvectionScheme::Linear(lower_xi(xi));
                 }
             }
         }
@@ -623,14 +594,16 @@ impl CoreSolver {
         frequency_hz: f64,
         dt: f64,
         steps_per_cycle: usize,
-        xi: f64,
+        advection: AdvectionScheme,
         tol: f64,
         cycles_max: usize,
         n_store: usize,
     ) -> Result<RfMarch, SolverError> {
-        let plus = AdvectionOperator::new(&self.mesh, xi, 1).map_err(SolverError::InvalidInput)?;
-        let minus =
-            AdvectionOperator::new(&self.mesh, xi, -1).map_err(SolverError::InvalidInput)?;
+        let xi = xi_of(advection);
+        let plus = AdvectionOperator::with_scheme(&self.mesh, advection, 1)
+            .map_err(SolverError::InvalidInput)?;
+        let minus = AdvectionOperator::with_scheme(&self.mesh, advection, -1)
+            .map_err(SolverError::InvalidInput)?;
         let sample_stride = (steps_per_cycle / n_store).max(1);
         let sample_steps: Vec<_> = (0..steps_per_cycle)
             .step_by(sample_stride)
@@ -748,6 +721,45 @@ impl CoreSolver {
 enum RfMarch {
     Complete(Box<RfResult>),
     Negative { step: usize },
+}
+
+/// スキーム名から移流スキームを決める。2つ目の値は ξ を下げながら探索するか（`blending`）。
+///
+/// - `upwind`: ξ = 0
+/// - `limiter`: van Leer の制限関数（2次精度、負にならない）
+/// - `xi` を指定: その ξ に固定
+/// - `blending`: ξ = 1 から始め、負の値が出るたびに 0.02 ずつ下げる
+fn choose_scheme(scheme: &str, xi: Option<f64>) -> Result<(AdvectionScheme, bool), SolverError> {
+    if scheme == "upwind" {
+        Ok((AdvectionScheme::Linear(0.0), false))
+    } else if scheme == "limiter" {
+        Ok((AdvectionScheme::VanLeer, false))
+    } else if let Some(xi) = xi {
+        Ok((AdvectionScheme::Linear(xi), false))
+    } else if scheme == "blending" {
+        Ok((AdvectionScheme::Linear(1.0), true))
+    } else {
+        Err(SolverError::InvalidInput(format!(
+            "unknown scheme: {scheme}"
+        )))
+    }
+}
+
+/// 結果に記録する ξ。制限関数スキームでは面ごとに変わるので NaN とする。
+fn xi_of(advection: AdvectionScheme) -> f64 {
+    match advection {
+        AdvectionScheme::Linear(xi) => xi,
+        AdvectionScheme::VanLeer => f64::NAN,
+    }
+}
+
+fn lower_xi(xi: f64) -> f64 {
+    let lowered = (xi - 0.02).max(0.0);
+    if lowered.abs() < 1.0e-12 {
+        0.0
+    } else {
+        lowered
+    }
 }
 
 fn validate_state(state: &[f64], expected: usize) -> Result<(), SolverError> {
