@@ -21,6 +21,10 @@ use crate::{
     operators::{ProcessKind, ProcessSpec},
 };
 
+/// これより小さい占有（気体の割合に対する比）の上準位からの逆過程は作らない。
+/// 例えば 300 K で 10 eV の電子励起準位の占有は exp(−390) で、計算量だけが増える。
+const NEGLIGIBLE_POPULATION: f64 = 1.0e-20;
+
 #[derive(Clone, Copy, Debug)]
 pub struct ModelOptions {
     /// 逆過程（超弾性衝突）を入れる。
@@ -136,7 +140,8 @@ pub fn build_processes(
                             let y_low = 1.0 / (1.0 + f);
                             (
                                 gas.fraction * y_low,
-                                (f > 0.0).then_some((gas, gas.fraction * f * y_low)),
+                                (f * y_low > NEGLIGIBLE_POPULATION)
+                                    .then_some((gas, gas.fraction * f * y_low)),
                             )
                         };
                     specs.push(base(ProcessKind::Excitation, fraction, u, 0.0));
@@ -163,7 +168,7 @@ pub fn build_processes(
                         section.threshold_ev,
                         0.0,
                     ));
-                    if options.superelastic && y_up > 0.0 {
+                    if options.superelastic && y_up > NEGLIGIBLE_POPULATION {
                         specs.push(superelastic(
                             section,
                             &gas.name,

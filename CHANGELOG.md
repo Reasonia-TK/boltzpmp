@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.0 - 2026-09-25
+
+### 既定の挙動の変更
+
+- 超弾性衝突と、気体温度による弾性衝突のエネルギー交換を既定で有効にした。0.1.3と同じ模型にするには
+  `PMSolver(..., superelastic=False, gas_heating=False)` を指定する。
+- 既定の移流スキームを `blending` から `limiter`（van Leer制限関数、2次精度）に変えた。
+- LXCatの3行目に「しきい値 統計重み比」の2数がある過程で、しきい値が0になっていた不具合を直した。
+
+### 追加
+
+- Rustコア: LXCat/BOLSIG+パーサー、numpy.interp互換の補間、Gas・Mixture、励起準位の占有、
+  衝突過程の組み立てを移し、Python側は公開APIを保った薄い層にした。
+- ROTATIONブロック、反応式の `<->`、表の3列目（運動量移行断面積）の読み込み。
+- BOLSIG+と同じ規則の超弾性衝突（ROTATIONの準位集団、2準位系、生成物の気体）。
+  `Mixture(T_exc_K=..., transition_energy_eV=...)` で占有の温度を与える。
+- 遮蔽Rutherford型の異方散乱（運動量移行断面積と積分断面積の比から角度分布を作る）。
+- 非一様エネルギー格子（`PMSolver(energy_grid=...)`、`VelocityMesh.from_edges`、`graded_energy_grid`）。
+- `solve_dc_sweep` をRustのスレッドプールで実行する `PMSolver.solve_dc_many`。
+- 結果の `reduced_attachment_frequency`、`fractions`、`alpha_over_N`、`eta_over_N`、
+  `PMSolver.processes()`。
+
+### 注意
+
+- `rate_coefficients` は過程の標的1個あたりの値（0.1.3と同じ）。混合気体全体の値は `fractions` を掛けて足す。
+- ROTATIONブロックは0.1.3では読み飛ばされていた。
+
 ## 0.1.3 - 2026-08-15
 
 - PyPI向けOIDC Trusted Publishingジョブを追加。

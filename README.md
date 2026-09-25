@@ -52,11 +52,72 @@ results = bp.solve_dc_sweep(
 計算点の並列化には `solve_dc_sweep` を使用してください。単一計算内の並列化は
 `PMSolver(..., parallel=True)` で明示的に有効化できます。
 
+## 断面積データ（LXCat・BOLSIG+形式）
+
+`parse_lxcat` はLXCatとBOLSIG+の書式を読みます。読み込みと検証はRustコアが行い、書式の誤りは
+行番号付きの `ValueError` になります。
+
+- EXCITATIONの3行目の「しきい値 統計重み比」
+- 反応式の `<->`（逆過程の標的を、生成物の気体とする）
+- ROTATIONブロック（3行目と4行目に下準位・上準位の「エネルギー 統計重み」）
+- 表の3列目（運動量移行断面積。このとき2列目は積分断面積として扱う）
+
+## 物理モデル
+
+0.2.0から、次の2つを既定で有効にしています。0.1.3と同じ模型で計算するには
+`PMSolver(..., superelastic=False, gas_heating=False)` とします。
+
+- 超弾性衝突（`superelastic=True`）。逆過程の断面積は詳細釣り合いで求めます。
+  - ROTATION: 同じ気体のROTATIONブロックに現れる全準位の占有をBoltzmann因子で求め（全体で規格化）、
+    遷移ごとに下準位・上準位の占有を掛けます（BOLSIG+と同じ）。
+  - EXCITATIONで `<->` を使うか、生成物が混合気体の成分にあるとき: 逆過程の標的は生成物の気体です。
+  - それ以外のEXCITATION: 下準位と上準位の2準位系として占有を求めます（BOLSIG+と同じ）。
+  - 占有の温度は `Mixture(T_K=..., T_exc_K=..., transition_energy_eV=...)` で与えます
+    （BOLSIG+のGas temperature、Excitation temperature、Transition energy。`T_exc_K`の既定は`T_K`）。
+- 気体温度による弾性衝突のエネルギー交換（`gas_heating=True`）。電場がなければ格子上のMaxwell分布が
+  厳密な定常解になるように離散化しています。
+
+断面積に運動量移行断面積（`CrossSection.mt_data` または表の3列目）があると、その比 σ_m/σ から
+遮蔽Rutherford型の角度分布（Okhrimovskyy et al., Phys. Rev. E 65, 037402 (2002)）を作り、
+散乱後の方向の再分配に使います。極性分子の回転励起のような前方散乱を、積分断面積のまま扱えます。
+
+## 数値スキームと格子
+
+`solve_dc` と `solve_rf` の `scheme` で移流の離散化を選びます。
+
+| scheme | 内容 |
+|---|---|
+| `limiter`（既定） | van Leer制限関数による2次精度のTVDスキーム。負の値を作らない |
+| `upwind` | 1次精度。刻みと電場に比例する数値拡散で平均エネルギーを高めに出す |
+| `blending` | ξ = 1（中心差分）から始め、負の値が出るたびに ξ を下げてやり直す |
+
+熱平衡の近く（0.01 Td）での平均エネルギーの誤差は、5 meV刻みで `upwind` が +5.9%、`limiter` が +0.4% でした。
+
+低エネルギーに細かい構造がある分子（回転しきい値が数meVのHFなど）では、非一様格子を使うと
+少ないセル数と大きな時間刻みで計算できます。
+
+```python
+edges = bp.graded_energy_grid(eps_max_eV=60.0, d_eps_min_eV=0.0025, eps_uniform_eV=0.5)
+solver = bp.PMSolver(mixture, energy_grid=edges, n_theta=16)
+```
+
+`eps_uniform_eV` までは一様刻み、その上は刻みを `sqrt(eps)` に比例して広げます（速度の刻みが一定）。
+
+## 計算結果
+
+- `rate_coefficients`: 過程ごとの速度係数（その過程の標的1個あたり）。キーは `気体名:過程名` で、
+  逆過程には ` (superelastic)` が付きます。
+- `fractions`: 各過程の標的の、全数密度に対する割合。混合気体全体への寄与は速度係数に掛けて足します。
+- `reduced_ionization_frequency`、`reduced_attachment_frequency`: その和。`alpha_over_N`、`eta_over_N` はドリフト速度で割った値です。
+- `PMSolver.processes()`: 組み立てた衝突過程（逆過程を含む）の一覧。
+
 ## LXCat断面積による検証
 
 2026-08-15に、LXCatのMorgan databaseから取得したAr電子衝突断面積セットを使い、
-1、10、50、100 Tdのupwind計算と、10、100 Tdの自動ブレンディング計算を検証しました。
-6条件すべてが収束し、Python参照実装との比較は次の結果でした。
+1、10、50、100 Tdのupwind計算と、10、100 Tdの自動ブレンディング計算を検証しました
+（0.1.3の模型。超弾性衝突と気体温度の効果なし）。
+6条件すべてが収束し、Python参照実装との比較は次の結果でした。0.2.0でも、両方を切ると
+同じ結果になることを互換テスト（`tests/parity`）で確かめています。
 
 | 指標 | 最大誤差 | 合格基準 |
 |---|---:|---:|
@@ -93,7 +154,7 @@ uv run --with scipy --extra test python benchmarks\validate_lxcat.py `
   --output reference\lxcat_morgan_argon_validation.json
 ```
 
-現在のテスト構成はRust単体テスト4件、Python API・物理テスト15件です。
+現在のテスト構成はRust単体テスト26件、Python API・物理テスト33件です。
 
 ## パッケージ公開
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import platform
 import sys
@@ -94,6 +95,14 @@ def build_mixture(module: Any, source: Path) -> tuple[Any, list[Any]]:
     return mixture, cross_sections
 
 
+def legacy_model_options(module: Any) -> dict[str, bool]:
+    """旧Python参照実装と同じ模型にする引数（boltzpmp 0.2.0以降だけが受け付ける）。"""
+    parameters = inspect.signature(module.PMSolver).parameters
+    return {
+        name: False for name in ("superelastic", "gas_heating") if name in parameters
+    }
+
+
 def run_case(
     module: Any,
     mixture: Any,
@@ -101,7 +110,7 @@ def run_case(
     scheme: str,
     initial_state: np.ndarray | None,
 ) -> tuple[Any, float]:
-    solver = module.PMSolver(mixture, **MESH)
+    solver = module.PMSolver(mixture, **MESH, **legacy_model_options(module))
     started = time.perf_counter()
     with warnings.catch_warnings(record=True) as captured:
         result = solver.solve_dc(

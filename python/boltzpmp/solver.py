@@ -25,6 +25,11 @@ class PMSolver:
 
     断面積の表に運動量移行断面積（`CrossSection.mt_data`、LXCat表の3列目）があれば、
     その比から遮蔽Rutherford型の角度分布を作り、異方散乱として扱う。
+
+    移流スキーム（`solve_dc`などの`scheme`）:
+    - `limiter`（既定）: van Leer制限関数の2次精度TVDスキーム。負の値を作らない。
+    - `upwind`: 1次精度。刻みと電場に比例する数値拡散で平均エネルギーを高めに出す。
+    - `blending`: ξ = 1（中心差分）から始め、負の値が出るたびに ξ を下げてやり直す。
     """
 
     def __init__(
@@ -118,7 +123,7 @@ class PMSolver:
     def solve_dc(
         self,
         EN_Td: float,
-        scheme: str = "blending",
+        scheme: str = "limiter",
         xi: float | None = None,
         tol: float = 1e-6,
         max_steps: int = int(2e6),
@@ -139,7 +144,7 @@ class PMSolver:
         EN_Td_values: Iterable[float],
         *,
         max_workers: int | None = None,
-        scheme: str = "blending",
+        scheme: str = "limiter",
         xi: float | None = None,
         tol: float = 1e-6,
         max_steps: int = int(2e6),
@@ -194,7 +199,7 @@ class PMSolver:
         self,
         EN_rms_Td: float,
         freq_Hz: float,
-        scheme: str = "blending",
+        scheme: str = "limiter",
         xi: float | None = None,
         cycles_max: int = 200,
         tol: float = 1e-4,
