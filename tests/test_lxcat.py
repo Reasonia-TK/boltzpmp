@@ -80,13 +80,15 @@ def test_malformed_blocks_report_line_numbers(text: str, line: int) -> None:
         parse_lxcat(text)
 
 
-def test_sigma_matches_numpy_interp_bitwise() -> None:
+def test_sigma_matches_numpy_interp() -> None:
     data = np.array([[0.0, 0.0], [1.0, 2.0], [1.0, 4.0], [3.0, 8.0], [7.5, 1.0]])
     section = CrossSection(kind="EXCITATION", species="A", name="x", threshold=0.5, data=data)
     eps = np.linspace(-1.0, 9.0, 401)
     expected = np.interp(eps, data[:, 0], data[:, 1], left=0.0, right=data[-1, 1])
     expected = np.where(eps < 0.5, 0.0, expected)
-    np.testing.assert_array_equal(section.sigma(eps), expected)
+    # x86-64 では演算順序まで同じなので完全に一致する。numpy が積和を融合演算（FMA）で計算する
+    # 環境（macOS arm64 など）では最後の1桁だけ異なるので、丸め誤差の範囲で比べる
+    np.testing.assert_allclose(section.sigma(eps), expected, rtol=4 * np.finfo(float).eps, atol=0.0)
 
 
 def test_invalid_tables_are_rejected() -> None:
