@@ -283,6 +283,96 @@ impl AdvectionOperator {
     }
 }
 
+/// 風上差分の移流と対角項からなる連立一次方程式を、流れに沿った1回の走査で解く。
+///
+/// θ方向の流れは常に θ = 0 側（負の加速度では π 側）へ向かい、エネルギー方向は前方半球で上向き、
+/// 後方半球で下向きなので、流れのグラフに閉路はない。セルを流れの順（位相的順序）に並べると
+/// 係数行列は三角行列になり、上流のセルから順に代入するだけで厳密に解ける。
+#[derive(Clone, Debug)]
+pub struct UpwindSweep {
+    order: Vec<usize>,
+    inflow_start: Vec<usize>,
+    inflow_cell: Vec<usize>,
+    inflow_coeff: Vec<f64>,
+    outflow: Vec<f64>,
+    n_theta: usize,
+}
+
+impl UpwindSweep {
+    pub fn new(mesh: &VelocityMesh, sign: i8) -> Result<Self, String> {
+        let operator = AdvectionOperator::new(mesh, 0.0, sign)?;
+        let n = operator.n_cells;
+        let mut outflow = vec![0.0; n];
+        let mut indegree = vec![0usize; n];
+        let mut downstream_of: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut inflow: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        for edge in &operator.edges {
+            outflow[edge.upstream] += edge.coeff_upstream;
+            inflow[edge.downstream].push((edge.upstream, edge.coeff_upstream));
+            downstream_of[edge.upstream].push(edge.downstream);
+            indegree[edge.downstream] += 1;
+        }
+        // Kahnの方法で位相的順序を作る
+        let mut order = Vec::with_capacity(n);
+        let mut ready: Vec<usize> = (0..n).filter(|k| indegree[*k] == 0).collect();
+        while let Some(k) = ready.pop() {
+            order.push(k);
+            for &d in &downstream_of[k] {
+                indegree[d] -= 1;
+                if indegree[d] == 0 {
+                    ready.push(d);
+                }
+            }
+        }
+        if order.len() != n {
+            return Err("the upwind advection graph has a cycle".into());
+        }
+        let mut inflow_start = Vec::with_capacity(n + 1);
+        let mut inflow_cell = Vec::new();
+        let mut inflow_coeff = Vec::new();
+        inflow_start.push(0);
+        for cell in &inflow {
+            for (upstream, coeff) in cell {
+                inflow_cell.push(*upstream);
+                inflow_coeff.push(*coeff);
+            }
+            inflow_start.push(inflow_cell.len());
+        }
+        Ok(Self {
+            order,
+            inflow_start,
+            inflow_cell,
+            inflow_coeff,
+            outflow,
+            n_theta: mesh.n_theta,
+        })
+    }
+
+    /// `(d_i + a·out_k) x_k − a Σ c x_upstream = s_k` を解く。`d_i` はエネルギーセルごとの対角項。
+    pub fn solve(
+        &self,
+        acceleration: f64,
+        diagonal_energy: &[f64],
+        source: &[f64],
+        x: &mut [f64],
+    ) -> Result<(), String> {
+        for &k in &self.order {
+            let mut value = source[k];
+            for index in self.inflow_start[k]..self.inflow_start[k + 1] {
+                value += acceleration * self.inflow_coeff[index] * x[self.inflow_cell[index]];
+            }
+            let denominator = diagonal_energy[k / self.n_theta] + acceleration * self.outflow[k];
+            if denominator.partial_cmp(&0.0) != Some(Ordering::Greater) {
+                return Err(format!(
+                    "cell {k} has neither collisions nor outflow; the implicit sweep cannot be solved"
+                ));
+            }
+            x[k] = value / denominator;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Deposit {
     target: usize,
@@ -758,6 +848,34 @@ mod tests {
         op.apply(&state, &mut parallel, &mut edge_flux, true);
         for (a, b) in output.iter().zip(&parallel) {
             assert!((a - b).abs() <= 1.0e-12 * a.abs().max(1.0e-30));
+        }
+    }
+
+    #[test]
+    fn upwind_sweep_solves_the_linear_system() {
+        let mesh = VelocityMesh::new(4.0, 0.1, 10).unwrap();
+        for sign in [1, -1] {
+            let sweep = UpwindSweep::new(&mesh, sign).unwrap();
+            let upwind = AdvectionOperator::new(&mesh, 0.0, sign).unwrap();
+            let acceleration = 3.0e5;
+            let diagonal: Vec<f64> = (0..mesh.n_eps).map(|i| 1.0 + 0.1 * i as f64).collect();
+            let source: Vec<f64> = (0..mesh.n_cells).map(|k| 1.0 + (k % 7) as f64).collect();
+            let mut x = vec![0.0; mesh.n_cells];
+            sweep
+                .solve(acceleration, &diagonal, &source, &mut x)
+                .unwrap();
+            // (d − a·A_up) x = s を確かめる
+            let mut advection = vec![0.0; mesh.n_cells];
+            let mut edge_flux = vec![0.0; upwind.edge_count()];
+            upwind.apply(&x, &mut advection, &mut edge_flux, false);
+            for k in 0..mesh.n_cells {
+                let lhs = diagonal[k / mesh.n_theta] * x[k] - acceleration * advection[k];
+                assert!(
+                    (lhs - source[k]).abs() <= 1.0e-10 * source[k],
+                    "sign {sign} cell {k}"
+                );
+            }
+            assert!(x.iter().all(|value| *value > 0.0));
         }
     }
 

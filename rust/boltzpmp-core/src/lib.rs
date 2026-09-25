@@ -5,6 +5,7 @@
 
 pub mod anisotropy;
 mod constants;
+mod implicit;
 pub mod interp;
 pub mod lxcat;
 mod mesh;
@@ -19,8 +20,8 @@ pub use lxcat::{CrossSection, Kind, LevelState, ParseError, Table};
 pub use mesh::{VelocityMesh, graded_edges};
 pub use mixture::{Gas, Mixture, Populations};
 pub use operators::{
-    AdvectionOperator, AdvectionScheme, CollisionOperator, ProcessKind, ProcessSpec,
+    AdvectionOperator, AdvectionScheme, CollisionOperator, ProcessKind, ProcessSpec, UpwindSweep,
 };
 pub use output::SwarmScalars;
 pub use processes::ModelOptions;
-pub use solver::{CoreSolver, DcOptions, DcResult, RfOptions, RfResult, SolverError};
+pub use solver::{CoreSolver, DcMethod, DcOptions, DcResult, RfOptions, RfResult, SolverError};

@@ -142,6 +142,7 @@ def test_fixed_steps_match_reference(solver: PMSolver) -> None:
 @pytest.mark.filterwarnings("ignore:EEPF at eps_max.*")
 def test_dc_matches_reference(solver: PMSolver) -> None:
     config = METADATA["dc"]
+    # 旧Python版と収束ステップ数まで比べるので、時間発展（陽解法）で解く
     result = solver.solve_dc(
         EN_Td=config["EN_Td"],
         scheme=config["scheme"],
@@ -149,6 +150,7 @@ def test_dc_matches_reference(solver: PMSolver) -> None:
         max_steps=200_000,
         check_every=100,
         init_n=REFERENCE["n_initial"],
+        method="explicit",
     )
     assert result.converged == config["converged"]
     assert result.n_steps == config["n_steps"]

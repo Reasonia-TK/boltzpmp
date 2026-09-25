@@ -81,6 +81,24 @@ results = bp.solve_dc_sweep(
 遮蔽Rutherford型の角度分布（Okhrimovskyy et al., Phys. Rev. E 65, 037402 (2002)）を作り、
 散乱後の方向の再分配に使います。極性分子の回転励起のような前方散乱を、積分断面積のまま扱えます。
 
+## DC定常解の陰解法
+
+0.3.0から、`solve_dc` の既定は陰解法（`method="implicit"`）です。定常方程式を直接解くので、
+時間発展（`method="explicit"`）より数十〜数千倍速く、同じ離散方程式の解になります。
+
+- 風上差分の移流と衝突の損失を、流れに沿った1回の走査で厳密に解きます（(ε, θ) の流れは閉路を作らない）。
+- 衝突による再注入と、`limiter` の高次補正は前の反復の値を使い（ソース反復と欠損補正）、Anderson加速で収束を速めます。
+- 電離・付着による電子数の増減は、陽解法と同じく和を1に保つ規格化として扱います。
+- `tol`（既定1e-8）は1反復の残差 ‖g(n) − n‖₁、`max_steps` は反復回数の上限です。
+- `scheme="blending"`（ξの探索）は陽解法だけで使えます。RFは陽解法のままです。
+
+| 条件 | 陽解法 | 陰解法 |
+|---|---:|---:|
+| 同梱Ar、10 Td（0.2 eV刻み、n_theta = 90） | 24 s | 0.7 s |
+| HF（xsecsim、非一様格子2331セル）、10 Td | 15 s | 0.3 s |
+| HF、30 Td | 400 s | 0.6 s |
+| HF、50 Td（4183セル） | 1.5時間で未収束 | 1.3 s |
+
 ## 数値スキームと格子
 
 `solve_dc` と `solve_rf` の `scheme` で移流の離散化を選びます。
@@ -154,7 +172,7 @@ uv run --with scipy --extra test python benchmarks\validate_lxcat.py `
   --output reference\lxcat_morgan_argon_validation.json
 ```
 
-現在のテスト構成はRust単体テスト26件、Python API・物理テスト33件です。
+現在のテスト構成はRust単体テスト28件、Python API・物理テスト38件です。
 
 ## パッケージ公開
 

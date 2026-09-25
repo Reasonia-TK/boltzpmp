@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use ::boltzpmp_core::{
-    CoreSolver, CrossSection, DcOptions, DcResult, Gas, Kind, LevelState, Mixture, ModelOptions,
-    ProcessKind, ProcessSpec, RfOptions, RfResult, SolverError, SwarmScalars, Table, VelocityMesh,
-    graded_edges, lxcat, mixture,
+    CoreSolver, CrossSection, DcMethod, DcOptions, DcResult, Gas, Kind, LevelState, Mixture,
+    ModelOptions, ProcessKind, ProcessSpec, RfOptions, RfResult, SolverError, SwarmScalars, Table,
+    VelocityMesh, graded_edges, lxcat, mixture,
 };
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
@@ -419,6 +419,10 @@ impl PyCoreSolver {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        en_td, scheme, xi_or_nan, tol, max_steps, check_every, initial_temperature_ev,
+        dt_or_nan, initial_state, method = "explicit"
+    ))]
     fn solve_dc(
         &self,
         py: Python<'_>,
@@ -431,6 +435,7 @@ impl PyCoreSolver {
         initial_temperature_ev: f64,
         dt_or_nan: f64,
         initial_state: Vec<f64>,
+        method: &str,
     ) -> PyResult<Py<PyDict>> {
         let options = dc_options(
             en_td,
@@ -442,6 +447,7 @@ impl PyCoreSolver {
             initial_temperature_ev,
             dt_or_nan,
             initial_state,
+            DcMethod::parse(method).map_err(to_python_error)?,
         );
         let result = py
             .detach(|| self.inner.solve_dc(options))
@@ -453,7 +459,7 @@ impl PyCoreSolver {
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         en_values, scheme, xi_or_nan, tol, max_steps, check_every, initial_temperature_ev,
-        dt_or_nan, initial_state, max_workers
+        dt_or_nan, initial_state, max_workers, method = "explicit"
     ))]
     fn solve_dc_many(
         &self,
@@ -468,7 +474,9 @@ impl PyCoreSolver {
         dt_or_nan: f64,
         initial_state: Vec<f64>,
         max_workers: Option<usize>,
+        method: &str,
     ) -> PyResult<Vec<Py<PyDict>>> {
+        let method = DcMethod::parse(method).map_err(to_python_error)?;
         let options: Vec<DcOptions> = en_values
             .into_iter()
             .map(|en_td| {
@@ -482,6 +490,7 @@ impl PyCoreSolver {
                     initial_temperature_ev,
                     dt_or_nan,
                     initial_state.clone(),
+                    method,
                 )
             })
             .collect();
@@ -541,6 +550,7 @@ fn dc_options(
     initial_temperature_ev: f64,
     dt_or_nan: f64,
     initial_state: Vec<f64>,
+    method: DcMethod,
 ) -> DcOptions {
     DcOptions {
         en_td,
@@ -552,6 +562,7 @@ fn dc_options(
         dt: finite_option(dt_or_nan),
         initial_state: nonempty_option(initial_state),
         initial_temperature_ev,
+        method,
     }
 }
 

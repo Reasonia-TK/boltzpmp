@@ -6,6 +6,7 @@ use thiserror::Error;
 use crate::{
     AdvectionOperator, AdvectionScheme, CollisionOperator, E_CHARGE, M_E, ProcessSpec, TOWNSEND,
     VelocityMesh,
+    implicit::{self, ImplicitProblem},
     mixture::Mixture,
     output::{SwarmScalars, cheap_scalars, compute_swarm, reduced_ionization_frequency},
     processes::{ModelOptions, build_processes},
@@ -21,17 +22,45 @@ pub enum SolverError {
     Normalization { step: usize },
 }
 
+/// DC定常解の求め方。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DcMethod {
+    /// 時間発展（プロパゲータ法）で定常になるまで進める。
+    #[default]
+    Explicit,
+    /// 定常方程式を輸送スイープのソース反復とAnderson加速で直接解く（`implicit`モジュール）。
+    Implicit,
+}
+
+impl DcMethod {
+    pub fn parse(value: &str) -> Result<Self, SolverError> {
+        match value {
+            "explicit" => Ok(Self::Explicit),
+            "implicit" => Ok(Self::Implicit),
+            _ => Err(SolverError::InvalidInput(format!(
+                "unknown method: {value} (use 'explicit' or 'implicit')"
+            ))),
+        }
+    }
+}
+
+/// 陰解法で使うAnderson加速の履歴の長さ。
+const ANDERSON_DEPTH: usize = 10;
+
 #[derive(Clone, Debug)]
 pub struct DcOptions {
     pub en_td: f64,
     pub scheme: String,
     pub xi: Option<f64>,
+    /// 陽解法では判定間隔ごとの相対変化、陰解法では1反復の残差 ‖g(n) − n‖₁ の許容値。
     pub tol: f64,
+    /// 陽解法ではステップ数、陰解法では反復回数の上限。
     pub max_steps: usize,
     pub check_every: usize,
     pub dt: Option<f64>,
     pub initial_state: Option<Vec<f64>>,
     pub initial_temperature_ev: f64,
+    pub method: DcMethod,
 }
 
 #[derive(Clone, Debug)]
@@ -317,6 +346,9 @@ impl CoreSolver {
 
     pub fn solve_dc(&self, options: DcOptions) -> Result<DcResult, SolverError> {
         validate_iterations(options.max_steps, options.check_every)?;
+        if options.method == DcMethod::Implicit {
+            return self.solve_dc_implicit(options);
+        }
         let initial =
             self.resolve_initial(options.initial_state, options.initial_temperature_ev)?;
         let electric_field = options.en_td * TOWNSEND * self.number_density;
@@ -356,6 +388,47 @@ impl CoreSolver {
             }
             advection = AdvectionScheme::Linear(lower_xi(xi));
         }
+    }
+
+    fn solve_dc_implicit(&self, options: DcOptions) -> Result<DcResult, SolverError> {
+        let initial =
+            self.resolve_initial(options.initial_state, options.initial_temperature_ev)?;
+        let electric_field = options.en_td * TOWNSEND * self.number_density;
+        let acceleration = E_CHARGE * electric_field.abs() / M_E;
+        let (advection, searching) = choose_scheme(&options.scheme, options.xi)?;
+        if searching {
+            return Err(SolverError::InvalidInput(
+                "scheme 'blending' searches xi by restarting the time march; with the implicit \
+                 method use 'limiter', 'upwind' or a fixed xi"
+                    .into(),
+            ));
+        }
+        let problem = ImplicitProblem::new(
+            &self.mesh,
+            &self.collision,
+            acceleration,
+            advection,
+            self.parallel,
+        )
+        .map_err(SolverError::InvalidInput)?;
+        let outcome = implicit::solve(
+            &problem,
+            &initial,
+            options.tol,
+            options.max_steps,
+            ANDERSON_DEPTH,
+        )
+        .map_err(SolverError::InvalidInput)?;
+        let swarm = compute_swarm(&outcome.state, &self.mesh, &self.processes);
+        Ok(DcResult {
+            state: outcome.state,
+            swarm,
+            xi_used: xi_of(advection),
+            converged: outcome.converged,
+            n_steps: outcome.iterations,
+            dt: f64::NAN,
+            acceleration,
+        })
     }
 
     /// 独立なDC計算を並列に解く。結果は入力順。`max_workers`が`None`ならRayonの既定数。

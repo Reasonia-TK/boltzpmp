@@ -101,14 +101,19 @@ class PMSolver:
         self,
         scheme: str,
         xi: float | None,
-        tol: float,
+        tol: float | None,
         max_steps: int,
         check_every: int,
         init: str,
         init_T_eV: float,
         dt: float | None,
         init_n: np.ndarray | None,
+        method: str,
     ) -> tuple:
+        if tol is None:
+            if method not in _DEFAULT_TOL:
+                raise ValueError(f"unknown method: {method!r} (use 'explicit' or 'implicit')")
+            tol = _DEFAULT_TOL[method]
         return (
             scheme,
             np.nan if xi is None else float(xi),
@@ -125,18 +130,28 @@ class PMSolver:
         EN_Td: float,
         scheme: str = "limiter",
         xi: float | None = None,
-        tol: float = 1e-6,
+        tol: float | None = None,
         max_steps: int = int(2e6),
         check_every: int = 200,
         init: str = "maxwell",
         init_T_eV: float = 1.0,
         dt: float | None = None,
         init_n: np.ndarray | None = None,
+        method: str = "implicit",
     ) -> SwarmResult:
+        """DC定常解。
+
+        - `method="implicit"`（既定）: 定常方程式を輸送スイープのソース反復とAnderson加速で直接解く。
+          `tol`（既定1e-8）は1反復の残差 ‖g(n) − n‖₁、`max_steps` は反復回数の上限。`dt` は使わない。
+        - `method="explicit"`: 時間発展で定常まで進める。`tol`（既定1e-6）は判定間隔ごとの相対変化、
+          `max_steps` はステップ数。`scheme="blending"`（ξの探索）はこちらだけで使える。
+
+        どちらも同じ離散方程式の解になる。
+        """
         arguments = self._dc_arguments(
-            scheme, xi, tol, max_steps, check_every, init, init_T_eV, dt, init_n
+            scheme, xi, tol, max_steps, check_every, init, init_T_eV, dt, init_n, method
         )
-        raw = self._core_solver.solve_dc(float(EN_Td), *arguments)
+        raw = self._core_solver.solve_dc(float(EN_Td), *arguments, method)
         return self._dc_result(raw, float(EN_Td), stacklevel=3)
 
     def solve_dc_many(
@@ -146,24 +161,25 @@ class PMSolver:
         max_workers: int | None = None,
         scheme: str = "limiter",
         xi: float | None = None,
-        tol: float = 1e-6,
+        tol: float | None = None,
         max_steps: int = int(2e6),
         check_every: int = 200,
         init: str = "maxwell",
         init_T_eV: float = 1.0,
         dt: float | None = None,
         init_n: np.ndarray | None = None,
+        method: str = "implicit",
     ) -> list[SwarmResult]:
-        """複数のDC換算電場をRustのスレッドで並列に解く（結果は入力順）。"""
+        """複数のDC換算電場をRustのスレッドで並列に解く（結果は入力順）。引数は `solve_dc` と同じ。"""
         values = [float(value) for value in EN_Td_values]
         if not values:
             return []
         if max_workers is not None and max_workers < 1:
             raise ValueError("max_workers must be positive or None")
         arguments = self._dc_arguments(
-            scheme, xi, tol, max_steps, check_every, init, init_T_eV, dt, init_n
+            scheme, xi, tol, max_steps, check_every, init, init_T_eV, dt, init_n, method
         )
-        raws = self._core_solver.solve_dc_many(values, *arguments, max_workers)
+        raws = self._core_solver.solve_dc_many(values, *arguments, max_workers, method)
         results = []
         for raw, value in zip(raws, values, strict=True):
             results.append(self._dc_result(raw, value, stacklevel=3))
@@ -260,6 +276,9 @@ class PMSolver:
             drift_velocity_rms=float(raw["drift_velocity_rms"]),
             nu_ion_rms_over_N=float(raw["nu_ion_rms_over_N"]),
         )
+
+
+_DEFAULT_TOL = {"explicit": 1e-6, "implicit": 1e-8}
 
 
 def _warn_tail(tail_ratio: float, stacklevel: int) -> None:

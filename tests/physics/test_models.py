@@ -73,8 +73,8 @@ def test_rotational_superelastic_relaxes_to_gas_temperature() -> None:
 def test_gas_heating_thermalizes_elastic_gas() -> None:
     mixture = Mixture([Gas("G", 1.0, [elastic()])], N=3.2e22, T_K=300.0)
     heated = PMSolver(mixture, eps_max_eV=0.3, d_eps_eV=0.005, n_theta=8)
-    # upwind の数値拡散（刻みと電場に比例）は電子を温めるので、中心差分で確かめる
-    result = solve(heated, 0.01, tol=1e-6, init_T_eV=0.035, scheme="blending")
+    # upwind の数値拡散（刻みと電場に比例）は電子を温めるので、中心差分で確かめる（ξの探索は陽解法だけ）
+    result = solve(heated, 0.01, tol=1e-6, init_T_eV=0.035, scheme="blending", method="explicit")
     assert result.converged
     assert result.xi_used == 1.0
     # 格子上のMaxwell分布が定常解（連続の 3/2 kT とは刻みの分だけ異なる）
@@ -155,11 +155,12 @@ def test_graded_grid_agrees_with_fine_uniform_grid() -> None:
     edges = graded_energy_grid(6.0, 0.005, 0.5)
     graded = PMSolver(mixture, energy_grid=edges, n_theta=12)
     assert graded.mesh.n_eps < 0.5 * fine.mesh.n_eps
-    a = solve(fine, 20.0, tol=1e-7)
-    b = solve(graded, 20.0, tol=1e-7)
+    a = solve(fine, 20.0, tol=1e-7, method="explicit")
+    b = solve(graded, 20.0, tol=1e-7, method="explicit")
     assert a.converged and b.converged
     assert b.mean_energy == pytest.approx(a.mean_energy, rel=0.02)
     assert b.drift_velocity == pytest.approx(a.drift_velocity, rel=0.02)
+    # 高エネルギー側の刻みが広いので、陽解法の時間刻みが大きくなる
     assert b.extra["dt"] > a.extra["dt"]
 
 
