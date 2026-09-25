@@ -162,6 +162,7 @@ def test_dc_matches_reference(solver: PMSolver) -> None:
 
 def test_rf_matches_reference(solver: PMSolver) -> None:
     config = METADATA["rf"]
+    # 旧Python版と時間発展の各段まで比べるので、陽解法で解く
     result = solver.solve_rf(
         EN_rms_Td=config["EN_rms_Td"],
         freq_Hz=config["freq_Hz"],
@@ -171,6 +172,7 @@ def test_rf_matches_reference(solver: PMSolver) -> None:
         tol=0.0,
         n_store=32,
         init_n=REFERENCE["n_initial"],
+        method="explicit",
     )
     assert result.extra["steps_per_cycle"] == config["steps_per_cycle"]
     np.testing.assert_allclose(result.n, SOLVER_REFERENCE["rf_n"], rtol=1e-8, atol=1e-12)

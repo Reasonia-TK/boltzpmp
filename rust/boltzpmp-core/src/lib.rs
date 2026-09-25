@@ -24,4 +24,6 @@ pub use operators::{
 };
 pub use output::SwarmScalars;
 pub use processes::ModelOptions;
-pub use solver::{CoreSolver, DcMethod, DcOptions, DcResult, RfOptions, RfResult, SolverError};
+pub use solver::{
+    CoreSolver, DcMethod, DcOptions, DcResult, RfOptions, RfResult, SolveMethod, SolverError,
+};

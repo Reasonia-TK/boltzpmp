@@ -218,14 +218,28 @@ class PMSolver:
         scheme: str = "limiter",
         xi: float | None = None,
         cycles_max: int = 200,
-        tol: float = 1e-4,
+        tol: float | None = None,
         steps_per_cycle: int | None = None,
         init: str = "maxwell",
         init_T_eV: float = 1.0,
         n_store: int = 200,
         dt: float | None = None,
         init_n: np.ndarray | None = None,
+        method: str = "implicit",
     ) -> SwarmResultRF:
+        """RFの周期定常解。
+
+        - `method="implicit"`（既定）: 各段をBDF2で陰的に解き、1周期の写像の不動点をAnderson加速で求める。
+          - `steps_per_cycle` の既定は `n_store` の倍数で256段以上（`dt` を与えればそこから決める）。
+          - `tol`（既定1e-6）は、周期写像の残差 ‖Φ(n) − n‖₁ と平均エネルギー波形の相対変化の許容値。
+          - `init_n` を与えないときは実効値の電場でのDC解から始める（`init_T_eV` はそのDC計算の初期温度）。
+        - `method="explicit"`: 陽的な時間発展（刻みは安定条件から決まる）。`tol`（既定1e-4）は周期ごとの
+          平均エネルギー波形の相対変化。`scheme="blending"`（ξの探索）はこちらだけで使える。
+        """
+        if tol is None:
+            if method not in _DEFAULT_RF_TOL:
+                raise ValueError(f"unknown method: {method!r} (use 'explicit' or 'implicit')")
+            tol = _DEFAULT_RF_TOL[method]
         raw = self._core_solver.solve_rf(
             float(EN_rms_Td),
             float(freq_Hz),
@@ -238,6 +252,7 @@ class PMSolver:
             int(n_store),
             np.nan if dt is None else float(dt),
             self._initial_state(init, init_n),
+            method,
         )
         steps = int(raw["steps_per_cycle"])
         cycles = int(raw["n_cycles"])
@@ -262,6 +277,8 @@ class PMSolver:
                 "dt": float(raw["dt"]),
                 "steps_per_cycle": steps,
                 "n_cycles": cycles,
+                "inner_iterations": int(raw["inner_iterations"]),
+                "cycle_residuals": np.asarray(raw["cycle_residuals"], dtype=float),
             },
             time_grid=np.asarray(raw["time"], dtype=float),
             mean_energy_t=np.asarray(raw["mean_energy_t"], dtype=float),
@@ -279,6 +296,7 @@ class PMSolver:
 
 
 _DEFAULT_TOL = {"explicit": 1e-6, "implicit": 1e-8}
+_DEFAULT_RF_TOL = {"explicit": 1e-4, "implicit": 1e-6}
 
 
 def _warn_tail(tail_ratio: float, stacklevel: int) -> None:

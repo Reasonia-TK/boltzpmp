@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use ::boltzpmp_core::{
     CoreSolver, CrossSection, DcMethod, DcOptions, DcResult, Gas, Kind, LevelState, Mixture,
-    ModelOptions, ProcessKind, ProcessSpec, RfOptions, RfResult, SolverError, SwarmScalars, Table,
-    VelocityMesh, graded_edges, lxcat, mixture,
+    ModelOptions, ProcessKind, ProcessSpec, RfOptions, RfResult, SolveMethod, SolverError,
+    SwarmScalars, Table, VelocityMesh, graded_edges, lxcat, mixture,
 };
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
@@ -504,6 +504,10 @@ impl PyCoreSolver {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        en_rms_td, frequency_hz, scheme, xi_or_nan, cycles_max, tol, steps_per_cycle_or_zero,
+        initial_temperature_ev, n_store, dt_or_nan, initial_state, method = "explicit"
+    ))]
     fn solve_rf(
         &self,
         py: Python<'_>,
@@ -518,6 +522,7 @@ impl PyCoreSolver {
         n_store: usize,
         dt_or_nan: f64,
         initial_state: Vec<f64>,
+        method: &str,
     ) -> PyResult<Py<PyDict>> {
         let options = RfOptions {
             en_rms_td,
@@ -531,6 +536,7 @@ impl PyCoreSolver {
             dt: finite_option(dt_or_nan),
             initial_state: nonempty_option(initial_state),
             initial_temperature_ev,
+            method: SolveMethod::parse(method).map_err(to_python_error)?,
         };
         let result = py
             .detach(|| self.inner.solve_rf(options))
@@ -627,6 +633,8 @@ fn rf_result_to_dict(py: Python<'_>, result: RfResult) -> PyResult<Py<PyDict>> {
     dict.set_item("mean_energy_rms", result.mean_energy_rms)?;
     dict.set_item("drift_velocity_rms", result.drift_velocity_rms)?;
     dict.set_item("nu_ion_rms_over_N", result.ionization_rms_over_n)?;
+    dict.set_item("inner_iterations", result.inner_iterations)?;
+    dict.set_item("cycle_residuals", result.cycle_residuals)?;
     Ok(dict.unbind())
 }
 
