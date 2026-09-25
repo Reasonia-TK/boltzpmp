@@ -22,7 +22,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Build development extension
-        run: uv run --extra test maturin develop
+        # 数値テストは最適化なしのビルドだと約10倍遅いので release でビルドする
+        run: uv run --extra test maturin develop --release
       - name: Rust tests
         run: cargo test --workspace
       - name: Python tests
