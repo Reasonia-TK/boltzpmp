@@ -36,7 +36,10 @@ RF周期定常計算も同じソルバーから実行できます。
 ```python
 result = solver.solve_rf(EN_rms_Td=10.0, freq_Hz=13.56e6)
 print(result.mean_energy_rms, result.drift_velocity_rms)
+print(result.mean_energy_avg, result.rate_coefficients_avg)  # 周期平均（0.5.0から）
 ```
+
+動作例は `examples/`（`examples/README.md`）にあります。
 
 独立した換算電場点は、Rust計算中にPythonインタープリタを解放して並列実行できます。
 
@@ -49,7 +52,7 @@ results = bp.solve_dc_sweep(
 )
 ```
 
-計算点の並列化には `solve_dc_sweep` を使用してください。単一計算内の並列化は
+計算点の並列化には `solve_dc_sweep` を使用してください（RFは `solver.solve_rf_many`）。単一計算内の並列化は
 `PMSolver(..., parallel=True)` で明示的に有効化できます。
 
 ## 断面積データ（LXCat・BOLSIG+形式）
@@ -88,16 +91,21 @@ results = bp.solve_dc_sweep(
 
 - 風上差分の移流と衝突の損失を、流れに沿った1回の走査で厳密に解きます（(ε, θ) の流れは閉路を作らない）。
 - 衝突による再注入と、`limiter` の高次補正は前の反復の値を使い（ソース反復と欠損補正）、Anderson加速で収束を速めます。
+- 0.5.0から、ソース反復では進みの遅いエネルギー緩和を、エネルギーだけの二項近似の演算子で直接解いて補正します
+  （合成加速）。`init_n` を与えなければ、その二項近似の定常解から始めます。
+  - 二項近似を使えなかったとき（帯行列が大きすぎるなど）は、理由が `extra["two_term_error"]` に入ります。
 - 電離・付着による電子数の増減は、陽解法と同じく和を1に保つ規格化として扱います。
 - `tol`（既定1e-8）は1反復の残差 ‖g(n) − n‖₁、`max_steps` は反復回数の上限です。
 - `scheme="blending"`（ξの探索）は陽解法だけで使えます。
 
-| 条件 | 陽解法 | 陰解法 |
+| 条件 | 陽解法 | 陰解法（0.5.0） |
 |---|---:|---:|
-| 同梱Ar、10 Td（0.2 eV刻み、n_theta = 90） | 24 s | 0.7 s |
-| HF（xsecsim、非一様格子2331セル）、10 Td | 15 s | 0.3 s |
-| HF、30 Td | 400 s | 0.6 s |
-| HF、50 Td（4183セル） | 1.5時間で未収束 | 1.3 s |
+| 同梱Ar、10 Td（0.2 eV刻み、n_theta = 90） | 24 s | 17反復、0.03 s |
+| HF（xsecsim のMT版、非一様格子2331セル）、10 Td | 15 s | 8反復、0.8 s |
+| HF MT版、50 Td | 1.5時間で未収束 | 14反復、0.9 s |
+| HF 異方散乱版、50 Td | — | 64反復、4.9 s |
+
+HFの時間の大半（約0.8 s）は、二項近似の帯行列の LU 分解です。0.4.0 との比較は `VALIDATION.md` にあります。
 
 ## RF周期定常解の陰解法
 
@@ -105,15 +113,18 @@ results = bp.solve_dc_sweep(
 
 - 各段をBDF2で陰的に解きます（1段目と、右辺が負になる段は後退Euler）。解き方はDCの陰解法と同じです。
 - 時間刻みは安定条件に縛られません。1周期の既定は256段以上（`n_store` の倍数）で、時間の誤差は1e-5程度です。
-- 1周期の写像の不動点を、Anderson加速と実効電場の前処理で求めます。
-  - 実効電場の問題は、実効値の電場に、エネルギーを変えない等方散乱 ω²/ν を加えたDC問題です
-    （高周波の極限で時間平均の分布になります）。
-  - `init_n` を与えないときは、この問題の定常解から始めます。
-- `tol`（既定1e-6）は、周期写像の残差 ‖Φ(n) − n‖₁ と前処理による誤差の見積もりの許容値です。
+- 1周期の写像の不動点を、Anderson加速と遅いモードの補正で求めます。
+  - `init_n` を与えないときは、実効電場の問題（実効値の電場に、エネルギーを変えない等方散乱 ω²/ν を加えたDC問題。
+    高周波の極限で時間平均の分布になる）の定常解から始めます。非等方成分は周期の始め（電場が最大）の値に直します。
+  - 遅いモード（エネルギー緩和）の補正には、1周期の流束に合わせた二項近似の演算子を使います。周期の残差の減りが
+    鈍ったときに補正し、補正で残差が増えたら以後は使いません。
+- `tol`（既定1e-6）は、周期写像の残差 ‖Φ(n) − n‖₁ と、遅いモードの誤差の見積もりの許容値です。
   - `extra["cycle_residuals"]` に周期ごとの残差、`extra["inner_iterations"]` に反復の合計が入ります。
 - 陽解法（時間の1次精度）は、安定条件の刻みでもドリフト速度に0.5〜1%の誤差が残ります。陰解法は256段で1e-5以下です。
-  - 気体密度が低く陽解法の刻みが粗くて済む条件では、陽解法のほうが速いこともあります（`VALIDATION.md`）。
-- 気体密度が低く、エネルギー分布の緩和に数千周期以上かかる条件では、収束に時間がかかります。`converged` を確かめてください。
+- 同梱Ar、10 Td、13.56 MHz では、133 Pa が8周期（3.2 s）、10 Pa が24周期（3.3 s、0.4.0 は52周期・26 s）です。
+- 1 Pa（1周期のうちに非等方成分が減衰しきらず、エネルギー緩和に数千周期かかる条件）では、200周期でも収束しません
+  （残差は単調に減ります）。`converged` を確かめてください（`VALIDATION.md`）。
+- 保存点は周期全体に等間隔です（陽解法も0.5.0から同じ）。
 
 ## 数値スキームと格子
 
@@ -144,6 +155,13 @@ solver = bp.PMSolver(mixture, energy_grid=edges, n_theta=16)
 - `fractions`: 各過程の標的の、全数密度に対する割合。混合気体全体への寄与は速度係数に掛けて足します。
 - `reduced_ionization_frequency`、`reduced_attachment_frequency`: その和。`alpha_over_N`、`eta_over_N` はドリフト速度で割った値です。
 - `PMSolver.processes()`: 組み立てた衝突過程（逆過程を含む）の一覧。
+- RFの結果（`SwarmResultRF`）
+  - `eedf`、`eepf`、`rate_coefficients` は電場の大きさが最大の時刻の値、`mean_energy` と `drift_velocity` は
+    波形の実効値です（0.4.0 までと同じ）。
+  - 周期平均（0.5.0から）: `mean_energy_avg`、`eedf_avg`、`eepf_avg`、`rate_coefficients_avg`、
+    `reduced_ionization_frequency_avg`、`reduced_attachment_frequency_avg`。流体モデルの速度係数にはこれを使います。
+  - 波形: `time_grid`、`E_t`、`mean_energy_t`、`drift_velocity_t`、`reduced_ionization_frequency_t`、
+    保存点ごとの EEDF `eedf_t`（形は `(len(time_grid), len(energy_grid))`）。
 
 ## LXCat断面積による検証
 

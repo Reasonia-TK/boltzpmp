@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from boltzpmp import CrossSection, Gas, Mixture, PMSolver
+from boltzpmp import CrossSection, Gas, Mixture, PMSolver, parse_lxcat
 
 pytestmark = pytest.mark.filterwarnings("ignore:EEPF at eps_max.*")
 
@@ -74,6 +74,65 @@ def test_implicit_with_growth_and_loss() -> None:
         assert np.sign(growth) == sign
         assert implicit.mean_energy == pytest.approx(explicit.mean_energy, rel=2e-5)
         assert implicit.drift_velocity == pytest.approx(explicit.drift_velocity, rel=2e-5)
+
+
+def test_two_term_acceleration_resolves_slow_energy_relaxation() -> None:
+    # 弾性衝突だけ（m/M = 1e-5）の気体では、エネルギー緩和に約 1e5 回の衝突がかかり、ソース反復だけでは
+    # 数千反復でも収束しない。二項近似の合成加速と、二項近似の解から始める初期状態で数十反復になる
+    solver = solver_for(elastic(mass_ratio=1e-5), eps_max=10.0, d_eps=0.02)
+    result = solver.solve_dc(2.0)
+    assert result.converged
+    assert result.extra["two_term_error"] is None
+    assert result.n_steps < 80
+    reference = solver.solve_dc(2.0, tol=1e-12, max_steps=20_000)
+    assert reference.converged
+    assert result.mean_energy == pytest.approx(reference.mean_energy, rel=1e-6)
+    assert result.drift_velocity == pytest.approx(reference.drift_velocity, rel=1e-6)
+
+
+def test_implicit_molecular_gas_from_the_default_start() -> None:
+    # 回転励起と逆過程が支配的な低い E/N（0.4 までは既定の 1 eV の Maxwell 分布から収束しなかった型）
+    rotations = parse_lxcat(
+        """
+ROTATION
+G
+ 0.0 1.0
+ 0.005 3.0
+-----
+ 0.005 0.0
+ 0.05 5.0e-19
+ 10.0 5.0e-19
+-----
+ROTATION
+G
+ 0.005 3.0
+ 0.015 5.0
+-----
+ 0.010 0.0
+ 0.05 5.0e-19
+ 10.0 5.0e-19
+-----
+"""
+    )
+    vibration = CrossSection(
+        kind="EXCITATION", species="G", name="vib", threshold=0.5,
+        data=table([(0.5, 0.0), (0.8, 1e-20), (10.0, 1e-20)]),
+    )
+    mixture = Mixture(
+        [Gas("G", 1.0, [elastic(sigma=1e-19, mass_ratio=2.7e-5), *rotations, vibration])],
+        N=3.2e22,
+        T_K=300.0,
+    )
+    solver = PMSolver(mixture, eps_max_eV=3.0, d_eps_eV=0.005, n_theta=8)
+    for en in (1.0, 10.0):
+        result = solver.solve_dc(en)
+        assert result.converged, en
+        assert result.n_steps < 100, (en, result.n_steps)
+        explicit = solver.solve_dc(
+            en, method="explicit", tol=1e-9, max_steps=3_000_000, init_n=result.n
+        )
+        assert result.mean_energy == pytest.approx(explicit.mean_energy, rel=2e-5)
+        assert result.drift_velocity == pytest.approx(explicit.drift_velocity, rel=2e-5)
 
 
 def test_implicit_rejects_xi_search() -> None:

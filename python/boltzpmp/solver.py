@@ -142,7 +142,11 @@ class PMSolver:
         """DC定常解。
 
         - `method="implicit"`（既定）: 定常方程式を輸送スイープのソース反復とAnderson加速で直接解く。
-          `tol`（既定1e-8）は1反復の残差 ‖g(n) − n‖₁、`max_steps` は反復回数の上限。`dt` は使わない。
+          - エネルギー緩和のような遅いモードは、エネルギーだけの二項近似の演算子で補正する（0.5 から）。
+          - `init_n` を与えなければ、二項近似の定常解から始める（`init_T_eV` の Maxwell 分布は、その
+            電子数の増加率を決めるのに使う）。
+          - `tol`（既定1e-8）は1反復の残差 ‖g(n) − n‖₁、`max_steps` は反復回数の上限。`dt` は使わない。
+          - 二項近似を使えなかったときは、その理由が `extra["two_term_error"]` に入る（使えたら `None`）。
         - `method="explicit"`: 時間発展で定常まで進める。`tol`（既定1e-6）は判定間隔ごとの相対変化、
           `max_steps` はステップ数。`scheme="blending"`（ξの探索）はこちらだけで使える。
 
@@ -208,6 +212,7 @@ class PMSolver:
                 "a": float(raw["acceleration"]),
                 "dt": float(raw["dt"]),
                 "eepf_tail_ratio": tail_ratio,
+                "two_term_error": raw["two_term_error"],
             },
         )
 
@@ -235,14 +240,83 @@ class PMSolver:
           - `init_n` を与えないときは実効値の電場でのDC解から始める（`init_T_eV` はそのDC計算の初期温度）。
         - `method="explicit"`: 陽的な時間発展（刻みは安定条件から決まる）。`tol`（既定1e-4）は周期ごとの
           平均エネルギー波形の相対変化。`scheme="blending"`（ξの探索）はこちらだけで使える。
+
+        保存点は周期全体に等間隔に取る（0.5 から陽解法も同じ）。周期平均の EEDF と速度係数は
+        `eedf_avg`、`rate_coefficients_avg` など、保存点ごとの EEDF は `eedf_t`（`SwarmResultRF` を参照）。
         """
+        arguments = self._rf_arguments(
+            scheme, xi, cycles_max, tol, steps_per_cycle, init, init_T_eV, n_store, dt, init_n,
+            method,
+        )
+        raw = self._core_solver.solve_rf(float(EN_rms_Td), float(freq_Hz), *arguments, method)
+        return self._rf_result(raw, float(EN_rms_Td), float(freq_Hz))
+
+    def solve_rf_many(
+        self,
+        EN_rms_Td_values: Iterable[float],
+        freq_Hz: float | Iterable[float],
+        *,
+        max_workers: int | None = None,
+        scheme: str = "limiter",
+        xi: float | None = None,
+        cycles_max: int = 200,
+        tol: float | None = None,
+        steps_per_cycle: int | None = None,
+        init: str = "maxwell",
+        init_T_eV: float = 1.0,
+        n_store: int = 200,
+        dt: float | None = None,
+        init_n: np.ndarray | None = None,
+        method: str = "implicit",
+    ) -> list[SwarmResultRF]:
+        """複数のRF条件をRustのスレッドで並列に解く（結果は入力順）。
+
+        `freq_Hz` は1つの値（すべてに共通）か、`EN_rms_Td_values` と同じ長さの列。ほかの引数は `solve_rf` と同じ。
+        """
+        values = [float(value) for value in EN_rms_Td_values]
+        if not values:
+            return []
+        if np.ndim(freq_Hz) == 0:
+            frequencies = [float(freq_Hz)] * len(values)
+        else:
+            frequencies = [float(value) for value in freq_Hz]
+            if len(frequencies) != len(values):
+                raise ValueError(
+                    f"got {len(values)} EN_rms_Td values but {len(frequencies)} frequencies"
+                )
+        if max_workers is not None and max_workers < 1:
+            raise ValueError("max_workers must be positive or None")
+        arguments = self._rf_arguments(
+            scheme, xi, cycles_max, tol, steps_per_cycle, init, init_T_eV, n_store, dt, init_n,
+            method,
+        )
+        raws = self._core_solver.solve_rf_many(
+            values, frequencies, *arguments, max_workers, method
+        )
+        return [
+            self._rf_result(raw, value, frequency)
+            for raw, value, frequency in zip(raws, values, frequencies, strict=True)
+        ]
+
+    def _rf_arguments(
+        self,
+        scheme: str,
+        xi: float | None,
+        cycles_max: int,
+        tol: float | None,
+        steps_per_cycle: int | None,
+        init: str,
+        init_T_eV: float,
+        n_store: int,
+        dt: float | None,
+        init_n: np.ndarray | None,
+        method: str,
+    ) -> tuple:
         if tol is None:
             if method not in _DEFAULT_RF_TOL:
                 raise ValueError(f"unknown method: {method!r} (use 'explicit' or 'implicit')")
             tol = _DEFAULT_RF_TOL[method]
-        raw = self._core_solver.solve_rf(
-            float(EN_rms_Td),
-            float(freq_Hz),
+        return (
             scheme,
             np.nan if xi is None else float(xi),
             int(cycles_max),
@@ -252,8 +326,9 @@ class PMSolver:
             int(n_store),
             np.nan if dt is None else float(dt),
             self._initial_state(init, init_n),
-            method,
         )
+
+    def _rf_result(self, raw: dict[str, Any], EN_rms_Td: float, freq_Hz: float) -> SwarmResultRF:
         steps = int(raw["steps_per_cycle"])
         cycles = int(raw["n_cycles"])
         return SwarmResultRF(
@@ -279,6 +354,7 @@ class PMSolver:
                 "n_cycles": cycles,
                 "inner_iterations": int(raw["inner_iterations"]),
                 "cycle_residuals": np.asarray(raw["cycle_residuals"], dtype=float),
+                "two_term_error": raw["two_term_error"],
             },
             time_grid=np.asarray(raw["time"], dtype=float),
             mean_energy_t=np.asarray(raw["mean_energy_t"], dtype=float),
@@ -292,6 +368,13 @@ class PMSolver:
             mean_energy_rms=float(raw["mean_energy_rms"]),
             drift_velocity_rms=float(raw["drift_velocity_rms"]),
             nu_ion_rms_over_N=float(raw["nu_ion_rms_over_N"]),
+            mean_energy_avg=float(raw["mean_energy_avg"]),
+            eedf_avg=np.asarray(raw["eedf_avg"], dtype=float),
+            eepf_avg=np.asarray(raw["eepf_avg"], dtype=float),
+            rate_coefficients_avg=dict(raw["rate_coefficients_avg"]),
+            reduced_ionization_frequency_avg=float(raw["reduced_ionization_frequency_avg"]),
+            reduced_attachment_frequency_avg=float(raw["reduced_attachment_frequency_avg"]),
+            eedf_t=np.asarray(raw["eedf_t"], dtype=float),
         )
 
 

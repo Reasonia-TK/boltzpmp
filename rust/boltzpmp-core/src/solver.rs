@@ -7,7 +7,7 @@ use crate::{
     AdvectionOperator, AdvectionScheme, CollisionOperator, E_CHARGE, M_E, ProcessSpec, TOWNSEND,
     VelocityMesh,
     implicit::{
-        self, ImplicitProblem, OuterAnderson, Preconditioner, StepBuffers, StepCoefficients,
+        self, DiffusionAcceleration, ImplicitProblem, OuterAnderson, StepBuffers, StepCoefficients,
         TimeStepper,
     },
     mixture::Mixture,
@@ -63,9 +63,12 @@ const RF_CYCLE_DEPTH: usize = 10;
 /// RFの陰解法の初期状態に使う、実効電場のDC解の許容値と反復回数の上限。
 const RF_START_TOL: f64 = 1.0e-8;
 const RF_START_MAX_ITERATIONS: usize = 2000;
-/// RFの周期写像の前処理（線形のソース反復）の相対許容値と反復回数の上限。
-const RF_PRECONDITIONER_TOL: f64 = 1.0e-4;
-const RF_PRECONDITIONER_MAX_ITERATIONS: usize = 2000;
+/// 遅いモードの補正の直後に、周期の残差が補正前のこの倍を超えたら、補正を使うのをやめる。
+const RF_NDA_GIVE_UP: f64 = 3.0;
+/// 周期の残差の減りがこの比より鈍ったら（速いモードが消えたら）遅いモードを補正する。
+const RF_STAGNATION: f64 = 0.7;
+/// 遅いモードの補正の間に置く周期の数（補正で起きた過渡がおさまるのを待つ）。
+const RF_CORRECTION_GAP: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct DcOptions {
@@ -92,6 +95,8 @@ pub struct DcResult {
     pub n_steps: usize,
     pub dt: f64,
     pub acceleration: f64,
+    /// 陰解法で二項近似の合成加速を使えなかったときの理由（使えたとき、陽解法では `None`）。
+    pub two_term_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,10 +137,16 @@ pub struct RfResult {
     pub mean_energy_rms: f64,
     pub drift_velocity_rms: f64,
     pub ionization_rms_over_n: f64,
+    /// 最後の1周期で時間平均した分布の値（EEDF、平均エネルギー、速度係数など）。
+    pub swarm_average: SwarmScalars,
+    /// 保存点ごとのEEDF（eV⁻¹、`time` と同じ順）。
+    pub eedf_t: Vec<Vec<f64>>,
     /// 陰解法で各段を解いた反復の合計（陽解法では0）。
     pub inner_iterations: usize,
     /// 陰解法の周期ごとの残差 ‖Φ(n) − n‖₁（陽解法では空）。
     pub cycle_residuals: Vec<f64>,
+    /// 陰解法で二項近似の前処理を使えなかったときの理由（使えたとき、陽解法では `None`）。
+    pub two_term_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -412,6 +423,7 @@ impl CoreSolver {
                     n_steps: march.steps,
                     dt,
                     acceleration,
+                    two_term_error: None,
                 });
             }
             advection = AdvectionScheme::Linear(lower_xi(xi));
@@ -419,6 +431,8 @@ impl CoreSolver {
     }
 
     fn solve_dc_implicit(&self, options: DcOptions) -> Result<DcResult, SolverError> {
+        // 初期状態を与えなければ、二項近似の定常解から始める（Maxwell 分布はその λ を決めるのに使う）
+        let two_term_start = options.initial_state.is_none();
         let initial =
             self.resolve_initial(options.initial_state, options.initial_temperature_ev)?;
         let electric_field = options.en_td * TOWNSEND * self.number_density;
@@ -442,6 +456,7 @@ impl CoreSolver {
         let outcome = implicit::solve(
             &problem,
             &initial,
+            two_term_start,
             options.tol,
             options.max_steps,
             ANDERSON_DEPTH,
@@ -456,6 +471,7 @@ impl CoreSolver {
             n_steps: outcome.iterations,
             dt: f64::NAN,
             acceleration,
+            two_term_error: outcome.acceleration_error,
         })
     }
 
@@ -465,23 +481,16 @@ impl CoreSolver {
         options: Vec<DcOptions>,
         max_workers: Option<usize>,
     ) -> Result<Vec<Result<DcResult, SolverError>>, SolverError> {
-        let run = || {
-            options
-                .into_par_iter()
-                .map(|item| self.solve_dc(item))
-                .collect::<Vec<_>>()
-        };
-        match max_workers {
-            Some(0) => Err(SolverError::InvalidInput(
-                "max_workers must be positive".into(),
-            )),
-            Some(workers) => rayon::ThreadPoolBuilder::new()
-                .num_threads(workers)
-                .build()
-                .map_err(|err| SolverError::InvalidInput(format!("thread pool: {err}")))
-                .map(|pool| pool.install(run)),
-            None => Ok(run()),
-        }
+        run_parallel(options, max_workers, |item| self.solve_dc(item))
+    }
+
+    /// 独立なRF計算を並列に解く。結果は入力順。`max_workers`が`None`ならRayonの既定数。
+    pub fn solve_rf_many(
+        &self,
+        options: Vec<RfOptions>,
+        max_workers: Option<usize>,
+    ) -> Result<Vec<Result<RfResult, SolverError>>, SolverError> {
+        run_parallel(options, max_workers, |item| self.solve_rf(item))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -708,34 +717,15 @@ impl CoreSolver {
             .map_err(SolverError::InvalidInput)?;
         let minus = AdvectionOperator::with_scheme(&self.mesh, advection, -1)
             .map_err(SolverError::InvalidInput)?;
-        let sample_stride = (steps_per_cycle / n_store).max(1);
-        let sample_steps: Vec<_> = (0..steps_per_cycle)
-            .step_by(sample_stride)
-            .take(n_store)
-            .collect();
-        let time: Vec<_> = sample_steps.iter().map(|k| *k as f64 * dt).collect();
-        let field: Vec<_> = time
-            .iter()
-            .map(|t| field_peak * (2.0 * PI * frequency_hz * t).cos())
-            .collect();
-        let index_max_field = field
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
-            .map(|(index, _)| index)
-            .unwrap_or(0);
+        let sampling = RfSampling::new(steps_per_cycle, n_store, dt, field_peak, frequency_hz);
 
         let mut state = initial.to_vec();
         normalize(&mut state, 0)?;
         let mut workspace = Workspace::new(&self.mesh, plus.edge_count().max(minus.edge_count()));
         let mut previous_energy: Option<Vec<f64>> = None;
-        let mut state_at_max_field = state.clone();
 
         for cycle in 1..=cycles_max {
-            let mut energy_wave = Vec::with_capacity(sample_steps.len());
-            let mut drift_wave = Vec::with_capacity(sample_steps.len());
-            let mut ionization_wave = Vec::with_capacity(sample_steps.len());
-            let mut sample_index = 0;
+            let mut recorder = CycleRecorder::new(sampling.time.len(), &state, 0);
             for k in 0..steps_per_cycle {
                 let time_local = k as f64 * dt;
                 let physical_acceleration =
@@ -757,29 +747,19 @@ impl CoreSolver {
                 )? {
                     return Ok(RfMarch::Negative { step: total_step });
                 }
-                if sample_index < sample_steps.len() && k == sample_steps[sample_index] {
-                    let (energy, drift) = cheap_scalars(&state, &self.mesh);
-                    energy_wave.push(energy);
-                    drift_wave.push(drift);
-                    ionization_wave.push(reduced_ionization_frequency(
-                        &state,
-                        &self.mesh,
-                        &self.processes,
-                    ));
-                    if sample_index == index_max_field {
-                        state_at_max_field.clone_from(&state);
-                    }
-                    sample_index += 1;
-                }
+                // 段 k の終わり（時刻 (k + 1)Δt）の状態
+                recorder.record(&state, &sampling, k + 1, &self.mesh, &self.processes);
             }
 
             let converged = previous_energy.as_ref().is_some_and(|previous| {
-                let denominator = energy_wave
+                let denominator = recorder
+                    .mean_energy
                     .iter()
                     .map(|x| x.abs())
                     .fold(0.0, f64::max)
                     .max(1.0e-300);
-                energy_wave
+                recorder
+                    .mean_energy
                     .iter()
                     .zip(previous)
                     .map(|(a, b)| (a - b).abs())
@@ -787,20 +767,12 @@ impl CoreSolver {
                     / denominator
                     < tol
             });
-            previous_energy = Some(energy_wave.clone());
+            previous_energy = Some(recorder.mean_energy.clone());
             if converged || cycle == cycles_max {
-                let swarm_at_max_field =
-                    compute_swarm(&state_at_max_field, &self.mesh, &self.processes);
                 return Ok(RfMarch::Complete(Box::new(periodic_result(
                     state,
-                    swarm_at_max_field,
-                    Waveforms {
-                        time: time.clone(),
-                        field: field.clone(),
-                        mean_energy: energy_wave,
-                        drift_velocity: drift_wave,
-                        ionization: ionization_wave,
-                    },
+                    recorder,
+                    &sampling,
                     PeriodicRun {
                         xi_used: xi,
                         converged,
@@ -809,7 +781,10 @@ impl CoreSolver {
                         dt,
                         inner_iterations: 0,
                         cycle_residuals: Vec::new(),
+                        two_term_error: None,
                     },
+                    &self.mesh,
+                    &self.processes,
                 ))));
             }
         }
@@ -819,9 +794,9 @@ impl CoreSolver {
     /// RFの周期定常解を陰解法で求める。
     ///
     /// - 各段は BDF2（1段目と、右辺が負になる段は後退 Euler）で、`TimeStepper` の反復で解く。
-    /// - 1周期の写像 Φ の不動点 n = Φ(n) を、実効電場の前処理（`implicit::Preconditioner`）と
-    ///   Anderson 加速で求める。
-    /// - 周期ごとの残差 ‖Φ(n) − n‖₁ と、前処理が見積もる誤差 ‖z‖₁ がともに `tol` 未満で収束とする。
+    /// - 1周期の写像 Φ の不動点 n = Φ(n) を、非線形拡散加速（`implicit::DiffusionAcceleration`）で求める。
+    ///   各周期の後に、周期平均の分布と流束から低次の定常解を求め、等方成分を置き換える。
+    /// - 周期ごとの残差 ‖Φ(n) − n‖₁ と、低次の解と周期平均の分布の差がともに `tol` 未満で収束とする。
     fn solve_rf_implicit(&self, options: RfOptions) -> Result<RfResult, SolverError> {
         if options.en_rms_td.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             return Err(SolverError::InvalidInput(
@@ -854,16 +829,15 @@ impl CoreSolver {
                     .into(),
             ));
         }
-        let mut preconditioner = self.effective_field(
+        let effective = self.effective_field(
             field_rms,
             2.0 * PI * options.frequency_hz,
             advection,
             options.initial_temperature_ev,
-            period,
         )?;
         let mut start = match options.initial_state {
             Some(state) => self.resolve_initial(Some(state), options.initial_temperature_ev)?,
-            None => preconditioner.steady().to_vec(),
+            None => self.periodic_start(&effective.steady)?,
         };
         let stepper = TimeStepper::new(&self.mesh, &self.collision, advection, self.parallel)
             .map_err(SolverError::InvalidInput)?;
@@ -878,53 +852,79 @@ impl CoreSolver {
             sampling: &sampling,
         };
         let mut work = stepper.buffers();
+        let mut meter = FluxMeter::new(&self.mesh, advection).map_err(SolverError::InvalidInput)?;
         let mut outer = OuterAnderson::new(RF_CYCLE_DEPTH);
+        let mut next = vec![0.0; start.len()];
         let mut inner_iterations = 0;
         let mut cycle_residuals = Vec::new();
-        let mut candidate = vec![0.0; start.len()];
-        let mut next = vec![0.0; start.len()];
+        let mut two_term_error = effective.error.clone();
+        // 遅いモードの補正を使うか。補正の直後に残差がはっきり増えたら、それ以降は使わない（低圧で
+        // 非等方成分の過渡が数周期残る条件では、流束から合わせた低次の演算子が周期ごとに振れるため）
+        let mut accelerate = effective.acceleration.is_some();
+        let mut previous_residual = f64::INFINITY;
+        let mut corrected_from: Option<f64> = None;
+        let mut since_correction = 0usize;
         for n_cycles in 1..=options.cycles_max {
-            let run = self.implicit_cycle(&cycle, &start, &mut work)?;
+            let run = self.implicit_cycle(&cycle, &start, &mut work, &mut meter)?;
             inner_iterations += run.iterations;
-            let difference: Vec<f64> = run
-                .end_state
-                .iter()
-                .zip(&start)
-                .map(|(after, before)| after - before)
-                .collect();
-            let residual: f64 = difference.iter().map(|value| value.abs()).sum();
+            let residual = implicit::l1_distance(&run.end_state, &start);
             cycle_residuals.push(residual);
-            // 1周期目は非等方成分がまだ周期解になじんでおらず、その過渡がエネルギー分布を動かすので、
-            // 前処理は2周期目から使う（1周期目の残差を遅いモードの誤差と取り違えないため）
-            let (correction, reliable) = if n_cycles == 1 {
-                (vec![0.0; start.len()], false)
-            } else {
-                let (correction, iterations, converged) = preconditioner
-                    .solve(
-                        &difference,
-                        RF_PRECONDITIONER_TOL,
-                        RF_PRECONDITIONER_MAX_ITERATIONS,
-                        ANDERSON_DEPTH,
-                    )
-                    .map_err(SolverError::InvalidInput)?;
-                inner_iterations += iterations;
-                (correction, converged)
+            if corrected_from
+                .take()
+                .is_some_and(|before| residual > RF_NDA_GIVE_UP * before)
+            {
+                accelerate = false;
+            }
+            // 速いモードが消えて残差の減りが鈍ったら、遅いモードの補正の出番
+            let stagnating = residual > RF_STAGNATION * previous_residual;
+            previous_residual = residual;
+            since_correction += 1;
+            // 遅いモードの補正（使わないときも、誤差の見積もりに使う）
+            let mut candidate = run.end_state.clone();
+            let estimate = match &effective.acceleration {
+                Some(acceleration) => {
+                    let steps = run.recorder.steps.max(1) as f64;
+                    let average: Vec<f64> =
+                        run.recorder.sum.iter().map(|value| value / steps).collect();
+                    let flux: Vec<f64> = run
+                        .recorder
+                        .face_flux
+                        .iter()
+                        .map(|value| value / steps)
+                        .collect();
+                    let mut target = run.end_state.clone();
+                    match acceleration.apply(
+                        &self.mesh,
+                        &self.collision,
+                        &average,
+                        &flux,
+                        &start,
+                        &mut target,
+                    ) {
+                        Ok(change) => {
+                            if accelerate && stagnating && since_correction >= RF_CORRECTION_GAP {
+                                candidate = target;
+                                since_correction = 0;
+                                corrected_from = Some(residual);
+                                outer.reset();
+                            }
+                            change
+                        }
+                        Err(error) => {
+                            two_term_error.get_or_insert(error);
+                            accelerate = false;
+                            0.0
+                        }
+                    }
+                }
+                None => 0.0,
             };
-            let error_estimate: f64 = correction.iter().map(|value| value.abs()).sum();
-            let converged = reliable && residual.max(error_estimate) < options.tol;
+            let converged = n_cycles > 1 && residual.max(estimate) < options.tol;
             if converged || n_cycles == options.cycles_max {
-                let swarm_at_max_field =
-                    compute_swarm(&run.state_at_max_field, &self.mesh, &self.processes);
                 return Ok(periodic_result(
                     run.end_state,
-                    swarm_at_max_field,
-                    Waveforms {
-                        time: sampling.time.clone(),
-                        field: sampling.field.clone(),
-                        mean_energy: run.mean_energy,
-                        drift_velocity: run.drift_velocity,
-                        ionization: run.ionization,
-                    },
+                    run.recorder,
+                    &sampling,
                     PeriodicRun {
                         xi_used: xi_of(advection),
                         converged,
@@ -933,23 +933,26 @@ impl CoreSolver {
                         dt,
                         inner_iterations,
                         cycle_residuals,
+                        two_term_error,
                     },
+                    &self.mesh,
+                    &self.processes,
                 ));
             }
-            // 前処理した更新 Φ(n) − z（負の値は0にして規格化）に Anderson 加速をかける
-            for ((value, after), z) in candidate.iter_mut().zip(&run.end_state).zip(&correction) {
-                *value = after - z;
+            if since_correction == 0 {
+                // 補正した状態から Anderson 加速の履歴を始め直す
+                start = candidate;
+            } else {
+                outer
+                    .next(&start, &candidate, &mut next)
+                    .map_err(SolverError::InvalidInput)?;
+                std::mem::swap(&mut start, &mut next);
             }
-            implicit::clip_and_normalize(&mut candidate).map_err(SolverError::InvalidInput)?;
-            outer
-                .next(&start, &candidate, &mut next)
-                .map_err(SolverError::InvalidInput)?;
-            std::mem::swap(&mut start, &mut next);
         }
         unreachable!()
     }
 
-    /// 実効電場の問題とその定常解（RFの陰解法の既定の初期状態と前処理）。
+    /// 実効電場の問題とその定常解（RFの陰解法の既定の初期状態と、非線形拡散加速の拡散係数）。
     ///
     /// 実効値の電場のDC問題に、エネルギーを変えない等方散乱 ω²/ν（ν は全衝突周波数）を加えたもの。
     /// 高周波では定常解が時間平均の分布になり（二項近似の実効電場の関係）、低周波では実効値の電場での
@@ -960,8 +963,8 @@ impl CoreSolver {
         angular_frequency: f64,
         advection: AdvectionScheme,
         temperature_ev: f64,
-        period: f64,
-    ) -> Result<Preconditioner<'_>, SolverError> {
+    ) -> Result<EffectiveField, SolverError> {
+        let period = 2.0 * PI / angular_frequency;
         let maxwell = self.initial_maxwell(temperature_ev)?;
         // ν ≪ ω のセルでは等方化がほぼ完全なので、上限を ω の 1e3 倍にしておく
         let isotropic = self
@@ -982,31 +985,62 @@ impl CoreSolver {
         let outcome = implicit::solve(
             &problem,
             &maxwell,
+            true,
             RF_START_TOL,
             RF_START_MAX_ITERATIONS,
             ANDERSON_DEPTH,
         )
         .map_err(SolverError::InvalidInput)?;
-        Ok(Preconditioner::new(problem, outcome.state, period))
+        // 二項近似を作れなかった（帯が大きすぎるなど）ときは、非線形拡散加速も使わない
+        let acceleration = outcome
+            .acceleration_error
+            .is_none()
+            .then(|| DiffusionAcceleration::new(&problem, period));
+        Ok(EffectiveField {
+            steady: outcome.state,
+            acceleration,
+            error: outcome.acceleration_error,
+        })
     }
 
-    /// `start` から1周期を陰的に進め、保存点の値を集める。
+    /// 実効電場の定常解から、周期の始め（t = 0、E = E_peak）の状態を作る。
+    ///
+    /// 二項近似では、実効電場の解の非等方成分は f₁,eff = −a_rms ν/(ν² + ω²) ∂f₀/∂v（+θ 向きに加速）で、
+    /// RF（加速度 −a_peak cos ωt）の t = 0 の値 f₁(0) = +a_peak ν/(ν² + ω²) ∂f₀/∂v はその −√2 倍になる
+    /// （どの周波数でも同じ）。そこで、θ について奇の成分を −√2 倍する（負になった値は0にして規格化）。
+    /// 非等方成分は低圧ではゆっくり（1周期に exp(−ν_m T) 倍）しか減らないので、向きの逆な初期状態から
+    /// 始めると、その過渡が長く残って前処理を乱す。
+    fn periodic_start(&self, steady: &[f64]) -> Result<Vec<f64>, SolverError> {
+        let mut start: Vec<f64> = (0..steady.len())
+            .map(|k| {
+                let mirrored = steady[self.mesh.mirror_idx(k)];
+                let even = 0.5 * (steady[k] + mirrored);
+                let odd = 0.5 * (steady[k] - mirrored);
+                even - 2.0_f64.sqrt() * odd
+            })
+            .collect();
+        implicit::clip_and_normalize(&mut start).map_err(SolverError::InvalidInput)?;
+        Ok(start)
+    }
+
+    /// `start` から1周期を陰的に進め、保存点の値と、周期平均の分布と面の流束を集める。
     fn implicit_cycle(
         &self,
         cycle: &RfCycle<'_>,
         start: &[f64],
         work: &mut StepBuffers,
+        meter: &mut FluxMeter,
     ) -> Result<CycleRun, SolverError> {
         let n = start.len();
-        let count = cycle.sampling.time.len();
         let mut previous = start.to_vec();
         let mut current = start.to_vec();
         let mut history = vec![0.0; n];
         let mut guess = vec![0.0; n];
-        let mut mean_energy = vec![0.0; count];
-        let mut drift_velocity = vec![0.0; count];
-        let mut ionization = vec![0.0; count];
-        let mut state_at_max_field = start.to_vec();
+        let mut recorder = CycleRecorder::new(
+            cycle.sampling.time.len(),
+            start,
+            self.mesh.n_eps.saturating_sub(1),
+        );
         let mut iterations = 0;
         for k in 0..cycle.steps {
             let time_end = (k + 1) as f64 * cycle.dt;
@@ -1055,25 +1089,44 @@ impl CoreSolver {
             }
             iterations += outcome.iterations;
             previous = std::mem::replace(&mut current, outcome.state);
-            if let Some(index) = cycle.sampling.slot[k + 1] {
-                let (energy, drift) = cheap_scalars(&current, &self.mesh);
-                mean_energy[index] = energy;
-                drift_velocity[index] = drift;
-                ionization[index] =
-                    reduced_ionization_frequency(&current, &self.mesh, &self.processes);
-                if index == cycle.sampling.index_max_field {
-                    state_at_max_field.clone_from(&current);
-                }
-            }
+            recorder.record(&current, cycle.sampling, k + 1, &self.mesh, &self.processes);
+            meter.add(
+                &current,
+                acceleration,
+                self.parallel,
+                &mut recorder.face_flux,
+            );
         }
         Ok(CycleRun {
             end_state: current,
-            mean_energy,
-            drift_velocity,
-            ionization,
-            state_at_max_field,
+            recorder,
             iterations,
         })
+    }
+}
+
+/// 独立な計算を Rayon で並列に解く（結果は入力順）。`max_workers` を与えればその数のスレッドで解く。
+fn run_parallel<T, R, F>(
+    items: Vec<T>,
+    max_workers: Option<usize>,
+    solve: F,
+) -> Result<Vec<Result<R, SolverError>>, SolverError>
+where
+    T: Send,
+    R: Send,
+    F: Fn(T) -> Result<R, SolverError> + Sync,
+{
+    let run = || items.into_par_iter().map(&solve).collect::<Vec<_>>();
+    match max_workers {
+        Some(0) => Err(SolverError::InvalidInput(
+            "max_workers must be positive".into(),
+        )),
+        Some(workers) => rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .map_err(|err| SolverError::InvalidInput(format!("thread pool: {err}")))
+            .map(|pool| pool.install(run)),
+        None => Ok(run()),
     }
 }
 
@@ -1107,11 +1160,110 @@ struct RfCycle<'a> {
 
 struct CycleRun {
     end_state: Vec<f64>,
+    recorder: CycleRecorder,
+    iterations: usize,
+}
+
+/// 実効電場の定常解（RFの初期状態）と、非線形拡散加速。
+struct EffectiveField {
+    steady: Vec<f64>,
+    /// 二項近似を作れなければ `None`。
+    acceleration: Option<DiffusionAcceleration>,
+    error: Option<String>,
+}
+
+/// 段の終わりの状態について、エネルギー面の上向きの流束を実際の移流スキームで求めて足す。
+///
+/// 面 b（セル b と b + 1 の間）の流束は、移流の出力をエネルギーセルごとに角度で足した値 Y の累積和
+/// Γ_b = −Σ_{i ≤ b} Y_i（エネルギー0の面では0）。
+struct FluxMeter {
+    /// 加速度の向き +1, −1 の順
+    operators: [AdvectionOperator; 2],
+    output: Vec<f64>,
+    edge_flux: Vec<f64>,
+    n_theta: usize,
+}
+
+impl FluxMeter {
+    fn new(mesh: &VelocityMesh, scheme: AdvectionScheme) -> Result<Self, String> {
+        let operators = [
+            AdvectionOperator::with_scheme(mesh, scheme, 1)?,
+            AdvectionOperator::with_scheme(mesh, scheme, -1)?,
+        ];
+        let edges = operators[0].edge_count().max(operators[1].edge_count());
+        Ok(Self {
+            operators,
+            output: vec![0.0; mesh.n_cells],
+            edge_flux: vec![0.0; edges],
+            n_theta: mesh.n_theta,
+        })
+    }
+
+    /// 符号付きの加速度 `acceleration` での面の流束を `sums` に足す。
+    fn add(&mut self, state: &[f64], acceleration: f64, parallel: bool, sums: &mut [f64]) {
+        let direction = usize::from(acceleration < 0.0);
+        self.operators[direction].apply(state, &mut self.output, &mut self.edge_flux, parallel);
+        let magnitude = acceleration.abs();
+        let mut flux = 0.0;
+        for (sum, row) in sums.iter_mut().zip(self.output.chunks(self.n_theta)) {
+            flux -= row.iter().sum::<f64>();
+            *sum += magnitude * flux;
+        }
+    }
+}
+
+/// 1周期の保存点の値と、時間平均の分布を集める。
+struct CycleRecorder {
     mean_energy: Vec<f64>,
     drift_velocity: Vec<f64>,
     ionization: Vec<f64>,
+    eedf: Vec<Vec<f64>>,
     state_at_max_field: Vec<f64>,
-    iterations: usize,
+    /// 各段の終わりの状態の和（周期は一様な段に分かれるので、段数で割れば時間平均）。
+    sum: Vec<f64>,
+    /// 各段の終わりのエネルギー面の流束の和（陰解法だけ。`FluxMeter`）。
+    face_flux: Vec<f64>,
+    steps: usize,
+}
+
+impl CycleRecorder {
+    fn new(count: usize, start: &[f64], faces: usize) -> Self {
+        Self {
+            mean_energy: vec![0.0; count],
+            drift_velocity: vec![0.0; count],
+            ionization: vec![0.0; count],
+            eedf: vec![Vec::new(); count],
+            state_at_max_field: start.to_vec(),
+            sum: vec![0.0; start.len()],
+            face_flux: vec![0.0; faces],
+            steps: 0,
+        }
+    }
+
+    /// 段 `step`（1から数える）の終わりの状態を足し、保存点なら値を記録する。
+    fn record(
+        &mut self,
+        state: &[f64],
+        sampling: &RfSampling,
+        step: usize,
+        mesh: &VelocityMesh,
+        processes: &[ProcessSpec],
+    ) {
+        for (total, value) in self.sum.iter_mut().zip(state) {
+            *total += value;
+        }
+        self.steps += 1;
+        if let Some(index) = sampling.slot[step] {
+            let (energy, drift) = cheap_scalars(state, mesh);
+            self.mean_energy[index] = energy;
+            self.drift_velocity[index] = drift;
+            self.ionization[index] = reduced_ionization_frequency(state, mesh, processes);
+            self.eedf[index] = energy_distribution(state, mesh);
+            if index == sampling.index_max_field {
+                self.state_at_max_field.copy_from_slice(state);
+            }
+        }
+    }
 }
 
 /// 1周期の保存点。時刻 t_i = m_i Δt（m_i = round(i N / n)、0 は周期の終わりと同じ状態）の値を、
@@ -1151,14 +1303,6 @@ impl RfSampling {
     }
 }
 
-struct Waveforms {
-    time: Vec<f64>,
-    field: Vec<f64>,
-    mean_energy: Vec<f64>,
-    drift_velocity: Vec<f64>,
-    ionization: Vec<f64>,
-}
-
 struct PeriodicRun {
     xi_used: f64,
     converged: bool,
@@ -1167,39 +1311,60 @@ struct PeriodicRun {
     dt: f64,
     inner_iterations: usize,
     cycle_residuals: Vec<f64>,
+    two_term_error: Option<String>,
 }
 
-/// 保存した波形から実効値と位相遅れを計算して結果にまとめる。
+/// 最後の1周期の記録から、実効値、位相遅れ、時間平均の値を計算して結果にまとめる。
 fn periodic_result(
     state: Vec<f64>,
-    swarm_at_max_field: SwarmScalars,
-    waves: Waveforms,
+    recorder: CycleRecorder,
+    sampling: &RfSampling,
     run: PeriodicRun,
+    mesh: &VelocityMesh,
+    processes: &[ProcessSpec],
 ) -> RfResult {
-    let phase_field_1 = dft_phase(&waves.field, 1);
-    let phase_drift_1 = dft_phase(&waves.drift_velocity, 1);
-    let phase_energy_2 = dft_phase(&waves.mean_energy, 2);
+    let phase_field_1 = dft_phase(&sampling.field, 1);
+    let phase_drift_1 = dft_phase(&recorder.drift_velocity, 1);
+    let phase_energy_2 = dft_phase(&recorder.mean_energy, 2);
+    let average: Vec<f64> = recorder
+        .sum
+        .iter()
+        .map(|value| value / recorder.steps.max(1) as f64)
+        .collect();
     RfResult {
         state,
-        swarm_at_max_field,
+        swarm_at_max_field: compute_swarm(&recorder.state_at_max_field, mesh, processes),
         xi_used: run.xi_used,
         converged: run.converged,
         n_cycles: run.n_cycles,
         steps_per_cycle: run.steps_per_cycle,
         dt: run.dt,
-        mean_energy_rms: rms(&waves.mean_energy),
-        drift_velocity_rms: rms(&waves.drift_velocity),
-        ionization_rms_over_n: rms(&waves.ionization),
+        mean_energy_rms: rms(&recorder.mean_energy),
+        drift_velocity_rms: rms(&recorder.drift_velocity),
+        ionization_rms_over_n: rms(&recorder.ionization),
         phase_delay_energy: wrap_angle(phase_energy_2 - 2.0 * phase_field_1),
         phase_delay_drift: wrap_angle(phase_drift_1 - phase_field_1),
-        time: waves.time,
-        field: waves.field,
-        mean_energy: waves.mean_energy,
-        drift_velocity: waves.drift_velocity,
-        reduced_ionization_frequency: waves.ionization,
+        swarm_average: compute_swarm(&average, mesh, processes),
+        time: sampling.time.clone(),
+        field: sampling.field.clone(),
+        mean_energy: recorder.mean_energy,
+        drift_velocity: recorder.drift_velocity,
+        reduced_ionization_frequency: recorder.ionization,
+        eedf_t: recorder.eedf,
         inner_iterations: run.inner_iterations,
         cycle_residuals: run.cycle_residuals,
+        two_term_error: run.two_term_error,
     }
+}
+
+/// エネルギーセルごとの EEDF（eV⁻¹）。
+fn energy_distribution(state: &[f64], mesh: &VelocityMesh) -> Vec<f64> {
+    let total: f64 = state.iter().sum();
+    state
+        .chunks(mesh.n_theta)
+        .zip(&mesh.d_eps)
+        .map(|(row, width)| row.iter().sum::<f64>() / (total * width))
+        .collect()
 }
 
 enum RfMarch {

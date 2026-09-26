@@ -12,21 +12,41 @@
 //! - `A` が制限関数スキームのときの高次の補正は、欠損補正として右辺に入れる。
 //! - λ ≥ 0 は左辺、λ < 0 は右辺に入れ、どちらでも右辺の各項が正になるようにする。
 //!
-//! ソース反復は衝突1回分ずつしか進まないので、Anderson 加速（履歴 `depth`）で収束を速める。
-//! 不動点は陽解法の定常解と同じ離散方程式を満たす。
+//! ソース反復は衝突1回分ずつしか進まない。エネルギー緩和のように多くの衝突を経てゆっくり進むモードは、
+//! エネルギーだけの二項近似の演算子 L₂（`two_term`）で直接解いて補正する（合成加速）。
+//!
+//! ```text
+//! n' = g(n)（上の走査）,   L₂ δ = P S (n' − n),   n ← n' + E δ
+//! ```
+//!
+//! S は右辺に回した項（再注入、等方散乱、λ⁻、高次の移流の補正）、P は角度についての和、E は等方な分布への
+//! 展開。δ の和は0にする（規格化の向きは補正しない）。残りのモードは Anderson 加速（履歴 `depth`）で収束を
+//! 速める。補正は n' = n で0になるので、不動点は陽解法の定常解と同じ離散方程式を満たす。
 //!
 //! RF の1段（`TimeStepper`）は、対角に c/Δt、右辺に前の段の値の組み合わせ h を加えた同じ形の方程式で、
 //! 同じ反復で解く（後退 Euler: c = 1, h = n_k/Δt。BDF2: c = 3/2, h = (4 n_k − n_{k−1})/(2Δt)）。
-//! 和をとると c/Δt·Σn' = Σh となるので、和が1の解はそのまま時間発展の解になる。
+//! 和をとると c/Δt·Σn' = Σh となるので、和が1の解はそのまま時間発展の解になる。1段では対角の c/Δt が
+//! 大きく、ソース反復が数回で収束するので、合成加速は使わない。
 
 use crate::{
-    AdvectionOperator, AdvectionScheme, CollisionOperator, VelocityMesh, operators::UpwindSweep,
+    AdvectionOperator, AdvectionScheme, CollisionOperator, VelocityMesh,
+    operators::UpwindSweep,
+    two_term::{TwoTermParameters, TwoTermSolver, cell_volumes, field_diffusion},
 };
 
 pub(crate) struct ImplicitOutcome {
     pub state: Vec<f64>,
     pub converged: bool,
     pub iterations: usize,
+}
+
+/// 定常反復（`solve`）の結果。
+pub(crate) struct SteadySolution {
+    pub state: Vec<f64>,
+    pub converged: bool,
+    pub iterations: usize,
+    /// 二項近似の合成加速を使えなかったときの理由（使えたら `None`）。
+    pub acceleration_error: Option<String>,
 }
 
 struct Buffers {
@@ -38,12 +58,42 @@ struct Buffers {
     advection_high: Vec<f64>,
     advection_upwind: Vec<f64>,
     edge_flux: Vec<f64>,
+    /// 合成加速で使う、反復の差 n' − n と、エネルギーセルごとの右辺と補正。
+    residual: Vec<f64>,
+    energy_rhs: Vec<f64>,
+    energy_delta: Vec<f64>,
+    energy_change: Vec<f64>,
+}
+
+impl Buffers {
+    fn new(mesh: &VelocityMesh, edges: usize, synthetic: bool) -> Self {
+        let (cells, energies) = if synthetic {
+            (mesh.n_cells, mesh.n_eps)
+        } else {
+            (0, 0)
+        };
+        Self {
+            collision: vec![0.0; mesh.n_cells],
+            energy_sum: vec![0.0; mesh.n_eps],
+            reinject: vec![0.0; mesh.n_eps],
+            source: vec![0.0; mesh.n_cells],
+            diagonal: vec![0.0; mesh.n_eps],
+            advection_high: vec![0.0; mesh.n_cells],
+            advection_upwind: vec![0.0; mesh.n_cells],
+            edge_flux: vec![0.0; edges],
+            residual: vec![0.0; cells],
+            energy_rhs: vec![0.0; energies],
+            energy_delta: vec![0.0; energies],
+            energy_change: vec![0.0; energies],
+        }
+    }
 }
 
 pub(crate) struct ImplicitProblem<'a> {
     mesh: &'a VelocityMesh,
     collision: &'a CollisionOperator,
     acceleration: f64,
+    scheme: AdvectionScheme,
     parallel: bool,
     sweep: UpwindSweep,
     correction: Option<(AdvectionOperator, AdvectionOperator)>,
@@ -72,6 +122,7 @@ impl<'a> ImplicitProblem<'a> {
             mesh,
             collision,
             acceleration,
+            scheme,
             parallel,
             sweep,
             correction,
@@ -101,20 +152,11 @@ impl<'a> ImplicitProblem<'a> {
             .correction
             .as_ref()
             .map_or(0, |(high, _)| high.edge_count());
-        Buffers {
-            collision: vec![0.0; self.mesh.n_cells],
-            energy_sum: vec![0.0; self.mesh.n_eps],
-            reinject: vec![0.0; self.mesh.n_eps],
-            source: vec![0.0; self.mesh.n_cells],
-            diagonal: vec![0.0; self.mesh.n_eps],
-            advection_high: vec![0.0; self.mesh.n_cells],
-            advection_upwind: vec![0.0; self.mesh.n_cells],
-            edge_flux: vec![0.0; edges],
-        }
+        Buffers::new(self.mesh, edges, true)
     }
 
-    /// 1回の反復 `next = g(x)`（`x` は和が1）。
-    fn map(&self, x: &[f64], next: &mut [f64], work: &mut Buffers) -> Result<(), String> {
+    /// 1回の反復 `next = g(x)`（`x` は和が1）。戻り値は `x` での増加率 λ。
+    fn map(&self, x: &[f64], next: &mut [f64], work: &mut Buffers) -> Result<f64, String> {
         let n_theta = self.mesh.n_theta;
         let nu = &self.collision.nu_total;
         self.collision.apply(
@@ -172,221 +214,264 @@ impl<'a> ImplicitProblem<'a> {
         self.sweep
             .solve(self.acceleration, &work.diagonal, &work.source, next)?;
         // 欠損補正で生じうる小さな負の値を除き、和を1にする
-        clip_and_normalize(next)
+        clip_and_normalize(next)?;
+        Ok(growth)
     }
 
-    /// 線形の方程式 `(L − λ) z = s` のソース反復の1回（増加率 λ は固定、規格化はしない）。
+    /// 二項近似の演算子（モジュールの説明と `Synthetic` を参照）。
+    fn two_term(&self) -> Result<TwoTermSolver, String> {
+        TwoTermSolver::new(
+            self.mesh,
+            self.collision,
+            &TwoTermParameters {
+                acceleration: self.acceleration,
+                scheme: self.scheme,
+                isotropic: self.isotropic.as_deref(),
+            },
+        )
+    }
+
+    /// 合成加速の補正 `next ← next + β E δ`、`L₂ δ = P [S(next) − S(x)]`（和は1のまま、β は
+    /// `SYNTHETIC_DAMPING`）。
     ///
-    /// `(ν + λ⁺ − a·A_up) z' = G(z) + a·(A(z) − A_up(z)) + λ⁻ z − s`。`L` は `map` と同じ演算子。
-    fn linear_map(
+    /// S は `map` で前の反復の値を使う項。再注入などは線形なので S(next − x) で計算する。高次の移流の補正
+    /// a(A − A_up) は、制限関数スキームでは非線形なので、`map` が `work` に残した x での値との差をとる。
+    fn synthetic_correction(
         &self,
-        z: &[f64],
-        rhs: &[f64],
+        solver: &TwoTermSolver,
         growth: f64,
+        x: &[f64],
         next: &mut [f64],
         work: &mut Buffers,
     ) -> Result<(), String> {
         let n_theta = self.mesh.n_theta;
-        let nu = &self.collision.nu_total;
-        self.collision.apply(
-            z,
-            &mut work.collision,
-            &mut work.energy_sum,
-            &mut work.reinject,
-            self.parallel,
-        );
-        for (k, source) in work.source.iter_mut().enumerate() {
-            *source = work.collision[k] + nu[k / n_theta] * z[k] - rhs[k];
-        }
+        work.energy_change.fill(0.0);
         if let Some((high, upwind)) = &self.correction {
+            let sums = |work: &Buffers, i: usize| -> f64 {
+                let row = i * n_theta..(i + 1) * n_theta;
+                work.advection_high[row.clone()]
+                    .iter()
+                    .zip(&work.advection_upwind[row])
+                    .map(|(high, low)| high - low)
+                    .sum()
+            };
+            for i in 0..self.mesh.n_eps {
+                work.energy_change[i] = -sums(work, i);
+            }
             high.apply(
-                z,
+                next,
                 &mut work.advection_high,
                 &mut work.edge_flux,
                 self.parallel,
             );
             upwind.apply(
-                z,
+                next,
                 &mut work.advection_upwind,
                 &mut work.edge_flux,
                 self.parallel,
             );
-            for (k, source) in work.source.iter_mut().enumerate() {
-                *source += self.acceleration * (work.advection_high[k] - work.advection_upwind[k]);
+            for i in 0..self.mesh.n_eps {
+                work.energy_change[i] += sums(work, i);
             }
         }
-        let (shift, extra) = if growth >= 0.0 {
-            (growth, 0.0)
-        } else {
-            (0.0, -growth)
-        };
-        for (diagonal, frequency) in work.diagonal.iter_mut().zip(nu) {
-            *diagonal = frequency + shift;
+        for ((difference, after), before) in work.residual.iter_mut().zip(next.iter()).zip(x) {
+            *difference = after - before;
         }
-        if extra > 0.0 {
-            for (source, value) in work.source.iter_mut().zip(z) {
-                *source += extra * value;
-            }
-        }
-        if let Some(frequency) = &self.isotropic {
-            let weight_sum: f64 = self.mesh.w_theta.iter().sum();
-            for (i, f) in frequency.iter().enumerate() {
-                let row = i * n_theta..(i + 1) * n_theta;
-                let total: f64 = z[row.clone()].iter().sum();
-                for (source, weight) in work.source[row].iter_mut().zip(&self.mesh.w_theta) {
-                    *source += f * total * weight / weight_sum;
-                }
-                work.diagonal[i] += f;
-            }
-        }
-        self.sweep
-            .solve(self.acceleration, &work.diagonal, &work.source, next)
-    }
-
-    /// 状態 `x` での増加率 λ = Σ C(x) / Σ x。
-    fn growth_of(&self, x: &[f64], work: &mut Buffers) -> f64 {
+        // 出力は −ν r ＋ 再注入。energy_sum には r の角度についての和が入る
         self.collision.apply(
-            x,
+            &work.residual,
             &mut work.collision,
             &mut work.energy_sum,
             &mut work.reinject,
             self.parallel,
         );
-        work.collision.iter().sum::<f64>() / x.iter().sum::<f64>()
+        let extra = (-growth).max(0.0);
+        for (i, rhs) in work.energy_rhs.iter_mut().enumerate() {
+            let total = work.energy_sum[i];
+            let reinjected = work.collision[i * n_theta..(i + 1) * n_theta]
+                .iter()
+                .sum::<f64>()
+                + self.collision.nu_total[i] * total;
+            let isotropic = self.isotropic.as_ref().map_or(0.0, |f| f[i] * total);
+            *rhs =
+                reinjected + isotropic + extra * total + self.acceleration * work.energy_change[i];
+        }
+        solver.solve_zero_sum(&work.energy_rhs, &mut work.energy_delta);
+        for (row, delta) in next.chunks_mut(n_theta).zip(&work.energy_delta) {
+            for (value, weight) in row.iter_mut().zip(&self.mesh.w_theta) {
+                *value += SYNTHETIC_DAMPING * delta * weight;
+            }
+        }
+        clip_and_normalize(next)
     }
 }
 
-/// RFの周期写像の前処理（実効電場の合成加速）。
+/// RFの周期写像の遅いモード（エネルギー緩和）の補正。低次の演算子を高次の解の流束に合わせる
+/// （中性子輸送の非線形拡散加速・CMFD と同じ考え方）。
 ///
-/// 周期写像 Φ の遅いモード（エネルギー緩和）では Φ ≈ exp(T L̄) で、L̄ は周期平均の演算子。
-/// 高周波では L̄ ≈ L_eff（実効値の電場 ＋ エネルギーを変えない等方散乱 ω²/ν の定常演算子）なので、
+/// 1周期の高次（輸送）の解から、周期平均の等方な分布 ū と、各エネルギー面の周期平均の流束 Γ̄ を求め、
+/// 面の流束を
 ///
 /// ```text
-/// x' = Φ(x) − z,   T (L_eff − λ) z = Φ(x) − x,   Σz = 0
+/// Γ_b = K̂_b (f_b − f_{b+1}) + w_b f_{風上}
 /// ```
 ///
-/// とすると、遅いモードの誤差は約 μT 倍（μ は L_eff の固有値）、速いモードの誤差は約 1/(μT) 倍になる。
-/// z は DC と同じ掃き出しとソース反復（Anderson 加速）で解き、L_eff の零空間（定常解 x_eff の向き）は
-/// 反復のたびに取り除く。‖z‖₁ は x の誤差の見積もりにもなる。
-pub(crate) struct Preconditioner<'a> {
-    problem: ImplicitProblem<'a>,
-    steady: Vec<f64>,
-    growth: f64,
+/// とした低次の演算子 L̂（衝突はそのまま、λ は ū での増加率）を作る。
+///
+/// - K̂ は、Γ̄ と ū の勾配の向きが同じ面では K̂ = Γ̄/(f̄_b − f̄_{b+1})（拡散係数そのものを合わせる。数値拡散も
+///   拡散の形をしている）。そうでない面は実効電場の二項近似の係数 K のままにして、残りを移動の項 w で合わせる。
+///   低圧の粗い格子では、実際の離散化の加熱が二項近似の何十倍にもなるので、合わせないと補正が大きく外れる。
+/// - 遅いモードでは1周期の等方成分の変化が Δū ≈ −T L̂ (ū − ū*) なので、δ = L̂⁻¹ Δū/T（Σδ = 0）を等方成分に
+///   足す。周期解では Δū = 0 なので δ = 0（不動点は変わらない）。‖δ‖₁ は遅いモードの誤差の見積もりになる。
+/// - 非等方成分は変えない（倍率を掛けると非等方成分も同じ倍率で変わり、新しい過渡が起きる）。
+pub(crate) struct DiffusionAcceleration {
+    diffusion: Vec<f64>,
+    volume: Vec<f64>,
+    n_theta: usize,
     period: f64,
-    work: Buffers,
 }
 
-impl<'a> Preconditioner<'a> {
-    /// `problem` は等方散乱を加えた実効電場の問題、`steady` はその定常解（和が1）。
-    pub fn new(problem: ImplicitProblem<'a>, steady: Vec<f64>, period: f64) -> Self {
-        let mut work = problem.buffers();
-        let growth = problem.growth_of(&steady, &mut work);
+/// 合わせた拡散係数を、二項近似の係数のこの倍の範囲に収める。
+const NDA_FIT_RANGE: f64 = 1.0e6;
+
+impl DiffusionAcceleration {
+    /// `problem` は等方散乱を加えた実効電場の問題（K を作るのに使う）、`period` は周期。
+    pub fn new(problem: &ImplicitProblem<'_>, period: f64) -> Self {
+        let mesh = problem.mesh;
+        let relaxation: Vec<f64> = (0..mesh.n_eps)
+            .map(|i| {
+                problem.collision.nu_momentum[i]
+                    + problem
+                        .isotropic
+                        .as_ref()
+                        .map_or(0.0, |frequency| frequency[i])
+            })
+            .collect();
         Self {
-            problem,
-            steady,
-            growth,
+            diffusion: field_diffusion(mesh, problem.acceleration, &relaxation),
+            volume: cell_volumes(mesh),
+            n_theta: mesh.n_theta,
             period,
-            work,
         }
     }
 
-    pub fn steady(&self) -> &[f64] {
-        &self.steady
+    /// 周期平均の状態 `average` と面の流束 `face_flux`（周期平均、上向きが正）から低次の演算子 L̂ を作り、
+    /// 1周期の等方成分の変化 Δū（`state` − `start`、`state` は周期の終わりの状態）から
+    /// `L̂ δ = Δū / T`（Σδ = 0）を解いて、`state` の等方成分に δ を足す（和は1に規格化）。
+    /// 戻り値は ‖δ‖₁（遅いモードの誤差の見積もり）。
+    pub fn apply(
+        &self,
+        mesh: &VelocityMesh,
+        collision: &CollisionOperator,
+        average: &[f64],
+        face_flux: &[f64],
+        start: &[f64],
+        state: &mut [f64],
+    ) -> Result<f64, String> {
+        let n = mesh.n_eps;
+        let total: f64 = average.iter().sum();
+        let mean: Vec<f64> = average
+            .chunks(self.n_theta)
+            .map(|row| row.iter().sum::<f64>() / total)
+            .collect();
+        let density: Vec<f64> = mean.iter().zip(&self.volume).map(|(u, v)| u / v).collect();
+        let faces = n.saturating_sub(1);
+        let mut diffusion = self.diffusion.clone();
+        let mut drift = vec![0.0; faces];
+        for b in 0..faces {
+            let gradient = density[b] - density[b + 1];
+            if gradient * face_flux[b] > 0.0 {
+                let base = self.diffusion[b];
+                diffusion[b] =
+                    (face_flux[b] / gradient).clamp(base / NDA_FIT_RANGE, base * NDA_FIT_RANGE);
+            }
+            let correction = face_flux[b] - diffusion[b] * gradient;
+            let upwind = if correction > 0.0 {
+                density[b]
+            } else {
+                density[b + 1]
+            };
+            if upwind > 1.0e-280 {
+                drift[b] = correction / upwind;
+            }
+        }
+        let growth = {
+            let mut output = vec![0.0; average.len()];
+            let mut energy_sum = vec![0.0; n];
+            let mut reinject = vec![0.0; n];
+            collision.apply(average, &mut output, &mut energy_sum, &mut reinject, false);
+            output.iter().sum::<f64>() / total
+        };
+        let solver = TwoTermSolver::with_fluxes(mesh, collision, &diffusion, &drift, growth)?;
+        let rhs: Vec<f64> = state
+            .chunks(self.n_theta)
+            .zip(start.chunks(self.n_theta))
+            .map(|(after, before)| {
+                (after.iter().sum::<f64>() - before.iter().sum::<f64>()) / self.period
+            })
+            .collect();
+        let mut delta = vec![0.0; n];
+        solver.solve_zero_sum(&rhs, &mut delta);
+        for (row, d) in state.chunks_mut(self.n_theta).zip(&delta) {
+            for (value, weight) in row.iter_mut().zip(&mesh.w_theta) {
+                *value += d * weight;
+            }
+        }
+        clip_and_normalize(state)?;
+        Ok(delta.iter().map(|d| d.abs()).sum())
+    }
+}
+
+/// 定常反復の合成加速。二項近似の演算子は最初に一度だけ作る。
+///
+/// 演算子には電子数の増加率 λ を入れない。λ は反復の途中で大きく変わり（初期状態の Maxwell 分布と解とで
+/// 電離の割合が違う）、その値を入れた演算子はかえって遅いモードの見積もりを外すことがあった
+/// （同梱 Ar の 2 Td で収束しなかった）。λ の効果は、外側の反復の規格化と右辺の λ⁻ が受け持つ。
+struct Synthetic {
+    solver: Option<TwoTermSolver>,
+    error: Option<String>,
+}
+
+/// 合成加速の補正に掛ける係数 β。
+///
+/// L₂ が遅いモードの減衰を小さく見積もる（制限関数が極値で風上差分になる、二項近似の誤差など）と、
+/// 補正が行き過ぎて振動し、β = 1 では収束しないことがある。遅いモードの誤差の倍率は 1 − β μ/μ₂
+/// （μ, μ₂ は真の演算子と L₂ の固有値）なので、μ/μ₂ < 2/β なら安定になる（β = 0.7 で約 2.9 倍まで）。
+/// 同梱 Ar と HF の DC では、β = 0.55〜0.85 でほぼ同じ反復回数だった。
+const SYNTHETIC_DAMPING: f64 = 0.7;
+
+impl Synthetic {
+    fn new() -> Self {
+        Self {
+            solver: None,
+            error: None,
+        }
     }
 
-    /// 補正 z、反復回数、線形反復が収束したか。z は `T (L_eff − λ) z = P r`（和が0）の解の等方成分 P z。
-    ///
-    /// P は角度平均（等方成分への射影）。遅いモードはエネルギー分布の形（等方成分）なので、残差も補正も
-    /// 等方成分に限る。非等方成分（1周期のうちに減衰する速いモード）を右辺に入れると、電場の結合を通して
-    /// 定常な加熱のように働き、ありもしない遅い補正を作ってしまう。
-    /// 前処理なので、線形反復が上限までに収束しなくてもその時点の値を返す（収束の判定は外側で行う）。
-    pub fn solve(
+    fn correct(
         &mut self,
-        residual: &[f64],
-        tol: f64,
-        max_iterations: usize,
-        depth: usize,
-    ) -> Result<(Vec<f64>, usize, bool), String> {
-        let mut rhs: Vec<f64> = residual.iter().map(|r| r / self.period).collect();
-        isotropic_projection(self.problem.mesh, &mut rhs);
-        let problem = &self.problem;
-        let steady = &self.steady;
-        let growth = self.growth;
-        let work = &mut self.work;
-        let outcome = iterate_linear(
-            |z, next| {
-                problem.linear_map(z, &rhs, growth, next, work)?;
-                let total: f64 = next.iter().sum();
-                for (value, base) in next.iter_mut().zip(steady) {
-                    *value -= total * base;
-                }
-                Ok(())
-            },
-            &vec![0.0; residual.len()],
-            tol,
-            max_iterations,
-            depth,
-        )?;
-        let mut correction = outcome.state;
-        isotropic_projection(self.problem.mesh, &mut correction);
-        Ok((correction, outcome.iterations, outcome.converged))
+        problem: &ImplicitProblem<'_>,
+        growth: f64,
+        x: &[f64],
+        next: &mut [f64],
+        work: &mut Buffers,
+    ) -> Result<(), String> {
+        match self.ensure(problem) {
+            Some(solver) => problem.synthetic_correction(solver, growth, x, next, work),
+            None => Ok(()),
+        }
     }
-}
 
-/// 各エネルギーセルの値を、立体角の重みに比例する等方な分布に置き換える（和は保つ）。
-fn isotropic_projection(mesh: &VelocityMesh, values: &mut [f64]) {
-    let n_theta = mesh.n_theta;
-    let weight_sum: f64 = mesh.w_theta.iter().sum();
-    for row in values.chunks_mut(n_theta) {
-        let total: f64 = row.iter().sum();
-        for (value, weight) in row.iter_mut().zip(&mesh.w_theta) {
-            *value = total * weight / weight_sum;
+    /// 演算子（初めて呼ばれたときに作る）。作れなければ `None`（理由は `error`）。
+    fn ensure(&mut self, problem: &ImplicitProblem<'_>) -> Option<&TwoTermSolver> {
+        if self.solver.is_none() && self.error.is_none() {
+            match problem.two_term() {
+                Ok(solver) => self.solver = Some(solver),
+                Err(error) => self.error = Some(error),
+            }
         }
+        self.solver.as_ref()
     }
-}
-
-/// 線形の不動点 `z = g(z)` を Anderson 加速で求める（規格化しない）。`‖g(z) − z‖₁ < tol ‖g(z)‖₁` で収束。
-fn iterate_linear<F>(
-    mut map: F,
-    initial: &[f64],
-    tol: f64,
-    max_iterations: usize,
-    depth: usize,
-) -> Result<ImplicitOutcome, String>
-where
-    F: FnMut(&[f64], &mut [f64]) -> Result<(), String>,
-{
-    let mut x = initial.to_vec();
-    let mut g = vec![0.0; x.len()];
-    let mut next = vec![0.0; x.len()];
-    let mut anderson = Anderson::new(depth);
-    let mut best = f64::INFINITY;
-    for iteration in 1..=max_iterations {
-        map(&x, &mut g)?;
-        if g.iter().any(|value| !value.is_finite()) {
-            return Err("linear iteration produced a non-finite value".into());
-        }
-        let residual = l1_distance(&g, &x);
-        let scale: f64 = g.iter().map(|v| v.abs()).sum();
-        if residual <= tol * scale || scale == 0.0 {
-            return Ok(ImplicitOutcome {
-                state: g,
-                converged: true,
-                iterations: iteration,
-            });
-        }
-        if residual > 10.0 * best {
-            anderson.reset();
-        }
-        best = best.min(residual);
-        anderson.combine(&x, &g, &mut next);
-        std::mem::swap(&mut x, &mut next);
-    }
-    Ok(ImplicitOutcome {
-        state: x,
-        converged: false,
-        iterations: max_iterations,
-    })
 }
 
 pub(crate) fn clip_and_normalize(values: &mut [f64]) -> Result<(), String> {
@@ -529,22 +614,46 @@ fn solve_dense(matrix: &mut [f64], rhs: &mut [f64], n: usize) -> Option<Vec<f64>
     solution.iter().all(|v| v.is_finite()).then_some(solution)
 }
 
-/// 残差 `‖g(x) − x‖₁` が `tol` 未満になるまで反復する。
+/// 残差 `‖g(x) − x‖₁` が `tol` 未満になるまで反復する（g は合成加速を含む1回の反復）。
+///
+/// `two_term_start` なら、二項近似の定常解（等方な分布）から始める（二項近似を使えなければ `initial` から）。
+/// 二項近似の解は多くの場合すでに解に近いので、遠い初期状態から大きな補正をかけて負の値を切り捨てるより、
+/// ずっと早く収束する。
 pub(crate) fn solve(
     problem: &ImplicitProblem<'_>,
     initial: &[f64],
+    two_term_start: bool,
     tol: f64,
     max_iterations: usize,
     depth: usize,
-) -> Result<ImplicitOutcome, String> {
+) -> Result<SteadySolution, String> {
     let mut work = problem.buffers();
-    iterate(
-        |x, g| problem.map(x, g, &mut work),
-        initial,
+    let mut synthetic = Synthetic::new();
+    let mut start = initial.to_vec();
+    if two_term_start && let Some(solver) = synthetic.ensure(problem) {
+        let mesh = problem.mesh;
+        for (row, value) in start.chunks_mut(mesh.n_theta).zip(solver.steady()) {
+            for (cell, weight) in row.iter_mut().zip(&mesh.w_theta) {
+                *cell = value * weight;
+            }
+        }
+    }
+    let outcome = iterate(
+        |x, g| {
+            let growth = problem.map(x, g, &mut work)?;
+            synthetic.correct(problem, growth, x, g, &mut work)
+        },
+        &start,
         tol,
         max_iterations,
         depth,
-    )
+    )?;
+    Ok(SteadySolution {
+        state: outcome.state,
+        converged: outcome.converged,
+        iterations: outcome.iterations,
+        acceleration_error: synthetic.error,
+    })
 }
 
 /// 不動点 `x = g(x)`（`g` は和が1の状態を返す）を Anderson 加速で求める。残差は `‖g(x) − x‖₁`。
@@ -598,6 +707,9 @@ pub(crate) fn l1_distance(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum()
 }
 
+/// 外側の Anderson 加速で、外挿の幅を決めるのに使わないセルの値（最大値との比）。
+const OUTER_NEGLIGIBLE: f64 = 1.0e-10;
+
 /// 周期写像の不動点探索などで、外側の反復に使う Anderson 加速（`next` は和が1に規格化した値を返す）。
 pub(crate) struct OuterAnderson {
     inner: Anderson,
@@ -612,10 +724,17 @@ impl OuterAnderson {
         }
     }
 
+    /// 履歴を捨てる（写像を変えたとき）。
+    pub fn reset(&mut self) {
+        self.inner.reset();
+        self.best = f64::INFINITY;
+    }
+
     /// `x` を写した結果が `g`（非負）のとき、次に試す状態を `out` に入れる。
     ///
     /// 加速した値が負になるセルがあれば、`g` からの外挿の幅を負にならない所まで縮める。0 で切り捨てると
-    /// 加速の履歴と実際の状態が食い違い、遅いモードの収束が止まる。
+    /// 加速の履歴と実際の状態が食い違い、遅いモードの収束が止まる。ただし `g` がほぼ0のセル（分布の裾の
+    /// 外）は幅を決めるのに使わず、0 で切り捨てる。そうしないと、そうしたセル1つで外挿の幅が0になる。
     pub fn next(&mut self, x: &[f64], g: &[f64], out: &mut [f64]) -> Result<(), String> {
         if g.iter().any(|value| value.is_nan() || *value < 0.0) {
             return Err("outer acceleration needs a non-negative mapped state".into());
@@ -626,10 +745,11 @@ impl OuterAnderson {
         }
         self.best = self.best.min(residual);
         self.inner.combine(x, g, out);
+        let negligible = OUTER_NEGLIGIBLE * g.iter().copied().fold(0.0, f64::max);
         let mut step = 1.0_f64;
         for (value, base) in out.iter().zip(g) {
-            if *value < 0.0 {
-                // base ≥ 0 > value なので分母は正
+            if *value < 0.0 && *base > negligible {
+                // base > 0 > value なので分母は正
                 step = step.min(base / (base - value));
             }
         }
@@ -701,16 +821,7 @@ impl<'a> TimeStepper<'a> {
                 .unwrap_or(0)
         });
         StepBuffers {
-            inner: Buffers {
-                collision: vec![0.0; self.mesh.n_cells],
-                energy_sum: vec![0.0; self.mesh.n_eps],
-                reinject: vec![0.0; self.mesh.n_eps],
-                source: vec![0.0; self.mesh.n_cells],
-                diagonal: vec![0.0; self.mesh.n_eps],
-                advection_high: vec![0.0; self.mesh.n_cells],
-                advection_upwind: vec![0.0; self.mesh.n_cells],
-                edge_flux: vec![0.0; edges],
-            },
+            inner: Buffers::new(self.mesh, edges, false),
         }
     }
 

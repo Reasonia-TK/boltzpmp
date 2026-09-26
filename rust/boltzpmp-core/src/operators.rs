@@ -378,6 +378,8 @@ struct Deposit {
     target: usize,
     source: usize,
     coefficient: f64,
+    /// 1回の衝突で出る電子の数（電離は2）。
+    electrons: u8,
 }
 
 /// 異方散乱の再注入。散乱後の角度分布は再分配核 `(1−w) K[node] + w K[node+1]` で与える。
@@ -392,6 +394,9 @@ struct AnisotropicDeposit {
 #[derive(Clone, Debug)]
 pub struct CollisionOperator {
     pub nu_total: Vec<f64>,
+    /// 運動量移行の周波数（非等方成分の緩和の速さ）。異方散乱では `ν σ_m/σ`、ほかの過程と熱運動による
+    /// エネルギー交換では全衝突周波数と同じ（再注入が等方なので運動量をすべて失う）。
+    pub nu_momentum: Vec<f64>,
     deposits: Vec<Deposit>,
     anisotropic: Vec<AnisotropicDeposit>,
     bank: Option<AngularBank>,
@@ -448,6 +453,7 @@ impl CollisionOperator {
         let bank = (xi_min <= xi_max).then(|| AngularBank::new(&mesh.theta_b, xi_min, xi_max));
 
         let mut nu_total = vec![0.0; mesh.n_eps];
+        let mut nu_momentum = vec![0.0; mesh.n_eps];
         let mut deposits = Vec::new();
         let mut anisotropic = Vec::new();
         for (process, xi_row) in processes.iter().zip(&xi_rows) {
@@ -458,6 +464,12 @@ impl CollisionOperator {
                     continue;
                 }
                 *total_frequency += nu;
+                let anisotropic_here =
+                    matches!((xi_row, &bank), (Some(row), Some(_)) if row[i].abs() >= XI_ISOTROPIC);
+                nu_momentum[i] += match (&process.sigma_mt, anisotropic_here) {
+                    (Some(mt), true) => nu * mt[i] / process.sigma[i],
+                    _ => nu,
+                };
                 let (energy, multiplier) = match process.kind {
                     ProcessKind::Elastic | ProcessKind::Effective => {
                         if thermal && in_thermal_range(mesh.eps_c[i], process.gas_temperature_ev) {
@@ -480,7 +492,7 @@ impl CollisionOperator {
                 let (lo, hi, w_lo, w_hi) = deposit_targets(&mesh.eps_c, energy);
                 let targets = [(lo, multiplier * nu * w_lo), (hi, multiplier * nu * w_hi)];
                 match (xi_row, &bank) {
-                    (Some(row), Some(bank)) if row[i].abs() >= XI_ISOTROPIC => {
+                    (Some(row), Some(bank)) if anisotropic_here => {
                         let (node, weight) = bank.locate(row[i]);
                         anisotropic.push(AnisotropicDeposit {
                             source: i,
@@ -495,18 +507,26 @@ impl CollisionOperator {
                                 target,
                                 source: i,
                                 coefficient,
+                                electrons: if multiplier > 1.0 { 2 } else { 1 },
                             });
                         }
                     }
                 }
             }
             if thermal {
+                let before = nu_total.clone();
                 add_thermal_exchange(process, mesh, number_density, &mut nu_total, &mut deposits);
+                for ((momentum, after), before) in
+                    nu_momentum.iter_mut().zip(&nu_total).zip(&before)
+                {
+                    *momentum += after - before;
+                }
             }
         }
         anisotropic.sort_by_key(|deposit| deposit.source);
         Ok(Self {
             nu_total,
+            nu_momentum,
             deposits,
             anisotropic,
             bank,
@@ -567,6 +587,30 @@ impl CollisionOperator {
         if !self.anisotropic.is_empty() {
             self.apply_anisotropic(state, output);
         }
+    }
+
+    /// 等方な分布に対する再注入の係数 `(移る先, 元, 周波数, 1回の衝突で出る電子の数)`。
+    /// エネルギーセルの電子数 u に対して、衝突の項の等方成分は `−ν_total[i] u[i] + Σ 周波数 × u[元]`
+    /// （移る先 = i）になる。周波数は出る電子の数を含む（電離では衝突周波数の2倍）。
+    /// 異方散乱の再分配核は電子数を保つので、等方な分布では係数だけで決まる。
+    pub fn energy_couplings(&self) -> impl Iterator<Item = (usize, usize, f64, u8)> + '_ {
+        let isotropic = self.deposits.iter().map(|deposit| {
+            (
+                deposit.target,
+                deposit.source,
+                deposit.coefficient,
+                deposit.electrons,
+            )
+        });
+        let anisotropic = self.anisotropic.iter().flat_map(|deposit| {
+            deposit
+                .targets
+                .iter()
+                .map(move |(target, coefficient)| (*target, deposit.source, *coefficient, 1))
+        });
+        isotropic
+            .chain(anisotropic)
+            .filter(|(_, _, coefficient, _)| *coefficient != 0.0)
     }
 
     fn apply_anisotropic(&self, state: &[f64], output: &mut [f64]) {
@@ -708,12 +752,14 @@ fn add_thermal_exchange(
             target: upper,
             source: lower,
             coefficient: rate_up,
+            electrons: 1,
         });
         nu_total[upper] += rate_down;
         deposits.push(Deposit {
             target: lower,
             source: upper,
             coefficient: rate_down,
+            electrons: 1,
         });
     }
 }

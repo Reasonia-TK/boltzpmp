@@ -543,6 +543,65 @@ impl PyCoreSolver {
             .map_err(to_python_error)?;
         rf_result_to_dict(py, result)
     }
+
+    /// 複数の (E/N_rms, 周波数) をRayonで並列に解く。結果は入力順で、最初の失敗は例外として送出する。
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        en_rms_values, frequency_values, scheme, xi_or_nan, cycles_max, tol,
+        steps_per_cycle_or_zero, initial_temperature_ev, n_store, dt_or_nan, initial_state,
+        max_workers, method = "explicit"
+    ))]
+    fn solve_rf_many(
+        &self,
+        py: Python<'_>,
+        en_rms_values: Vec<f64>,
+        frequency_values: Vec<f64>,
+        scheme: String,
+        xi_or_nan: f64,
+        cycles_max: usize,
+        tol: f64,
+        steps_per_cycle_or_zero: usize,
+        initial_temperature_ev: f64,
+        n_store: usize,
+        dt_or_nan: f64,
+        initial_state: Vec<f64>,
+        max_workers: Option<usize>,
+        method: &str,
+    ) -> PyResult<Vec<Py<PyDict>>> {
+        if en_rms_values.len() != frequency_values.len() {
+            return Err(PyValueError::new_err(format!(
+                "got {} E/N values but {} frequencies",
+                en_rms_values.len(),
+                frequency_values.len()
+            )));
+        }
+        let method = SolveMethod::parse(method).map_err(to_python_error)?;
+        let options: Vec<RfOptions> = en_rms_values
+            .into_iter()
+            .zip(frequency_values)
+            .map(|(en_rms_td, frequency_hz)| RfOptions {
+                en_rms_td,
+                frequency_hz,
+                scheme: scheme.clone(),
+                xi: finite_option(xi_or_nan),
+                cycles_max,
+                tol,
+                steps_per_cycle: (steps_per_cycle_or_zero > 0).then_some(steps_per_cycle_or_zero),
+                n_store,
+                dt: finite_option(dt_or_nan),
+                initial_state: nonempty_option(initial_state.clone()),
+                initial_temperature_ev,
+                method,
+            })
+            .collect();
+        let results = py
+            .detach(|| self.inner.solve_rf_many(options, max_workers))
+            .map_err(to_python_error)?;
+        results
+            .into_iter()
+            .map(|result| rf_result_to_dict(py, result.map_err(to_python_error)?))
+            .collect()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -608,6 +667,7 @@ fn dc_result_to_dict(py: Python<'_>, result: DcResult) -> PyResult<Py<PyDict>> {
     dict.set_item("n_steps", result.n_steps)?;
     dict.set_item("dt", result.dt)?;
     dict.set_item("acceleration", result.acceleration)?;
+    dict.set_item("two_term_error", result.two_term_error)?;
     Ok(dict.unbind())
 }
 
@@ -635,6 +695,21 @@ fn rf_result_to_dict(py: Python<'_>, result: RfResult) -> PyResult<Py<PyDict>> {
     dict.set_item("nu_ion_rms_over_N", result.ionization_rms_over_n)?;
     dict.set_item("inner_iterations", result.inner_iterations)?;
     dict.set_item("cycle_residuals", result.cycle_residuals)?;
+    dict.set_item("two_term_error", result.two_term_error)?;
+    dict.set_item("eedf_t", result.eedf_t)?;
+    let average = result.swarm_average;
+    dict.set_item("eedf_avg", average.eedf)?;
+    dict.set_item("eepf_avg", average.eepf)?;
+    dict.set_item("mean_energy_avg", average.mean_energy)?;
+    dict.set_item(
+        "reduced_ionization_frequency_avg",
+        average.reduced_ionization_frequency,
+    )?;
+    dict.set_item(
+        "reduced_attachment_frequency_avg",
+        average.reduced_attachment_frequency,
+    )?;
+    dict.set_item("rate_coefficients_avg", average.rate_coefficients)?;
     Ok(dict.unbind())
 }
 

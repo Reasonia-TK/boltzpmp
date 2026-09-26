@@ -77,10 +77,15 @@ def test_implicit_rf_matches_explicit(ionizing: PMSolver) -> None:
     assert implicit.drift_velocity_rms == pytest.approx(explicit.drift_velocity_rms, rel=1e-3)
     assert implicit.nu_ion_rms_over_N == pytest.approx(explicit.nu_ion_rms_over_N, rel=2e-3)
     assert implicit.phase_delay_W == pytest.approx(explicit.phase_delay_W, abs=2e-3)
-    # 陽解法の保存値は段 k の後の状態で、時刻 k Δt と記録されている（1段ずれ）
+    # 0.5.0 から陽解法も、保存点の時刻の状態を記録する（周期全体に等間隔）
     energy = on_phases(implicit, implicit.mean_energy_t)
-    explicit_energy = on_phases(explicit, explicit.mean_energy_t, shift=explicit.extra["dt"])
+    explicit_energy = on_phases(explicit, explicit.mean_energy_t)
     assert np.max(np.abs(energy - explicit_energy)) < 1e-3 * np.max(energy)
+    # 周期平均の値は陰解法と陽解法で一致する
+    assert implicit.mean_energy_avg == pytest.approx(explicit.mean_energy_avg, rel=5e-4)
+    assert implicit.reduced_ionization_frequency_avg == pytest.approx(
+        explicit.reduced_ionization_frequency_avg, rel=2e-3
+    )
 
 
 def test_implicit_rf_is_second_order_in_time(ionizing: PMSolver) -> None:
@@ -121,6 +126,56 @@ def test_low_frequency_limit_follows_the_field() -> None:
     peak = int(np.argmax(np.abs(result.E_t)))
     dc = solver.solve_dc(np.sqrt(2.0) * en_rms, tol=1e-12)
     assert result.mean_energy_t[peak] == pytest.approx(dc.mean_energy, rel=1e-3)
+
+
+@pytest.mark.parametrize("method", ["implicit", "explicit"])
+def test_cycle_averages_are_time_averages(ionizing: PMSolver, method: str) -> None:
+    result = ionizing.solve_rf(60.0, 5e7, n_store=64, method=method, cycles_max=300)
+    assert result.converged
+    widths = result.mesh.d_eps
+    # 保存点は周期全体に等間隔なので、滑らかな周期波形の平均は時間平均に一致する
+    assert result.mean_energy_avg == pytest.approx(np.mean(result.mean_energy_t), rel=1e-5)
+    assert result.reduced_ionization_frequency_avg == pytest.approx(
+        np.mean(result.reduced_ionization_frequency_t), rel=1e-5
+    )
+    assert np.sum(result.eedf_avg * widths) == pytest.approx(1.0, rel=1e-12)
+    assert result.eedf_t.shape == (64, result.mesh.n_eps)
+    np.testing.assert_allclose(result.eedf_t @ widths, 1.0, rtol=1e-12)
+    np.testing.assert_allclose(result.eedf_t.mean(axis=0), result.eedf_avg, rtol=1e-4, atol=1e-12)
+    ionization = [key for key in result.rate_coefficients_avg if key.endswith(":ion")]
+    assert ionization and result.rate_coefficients_avg[ionization[0]] > 0.0
+
+
+def test_solve_rf_many_matches_single_solves(ionizing: PMSolver) -> None:
+    values = [40.0, 60.0]
+    many = ionizing.solve_rf_many(values, 5e7, n_store=32, max_workers=2)
+    for value, result in zip(values, many, strict=True):
+        single = ionizing.solve_rf(value, 5e7, n_store=32)
+        assert result.extra["EN_rms_Td"] == value
+        np.testing.assert_array_equal(result.n, single.n)
+        assert result.mean_energy_avg == single.mean_energy_avg
+    frequencies = ionizing.solve_rf_many([60.0, 60.0], [5e7, 1e8], n_store=32)
+    assert [r.extra["freq_Hz"] for r in frequencies] == [5e7, 1e8]
+    with pytest.raises(ValueError, match="frequencies"):
+        ionizing.solve_rf_many([60.0, 60.0], [5e7], n_store=32)
+
+
+def test_implicit_rf_at_low_pressure() -> None:
+    # 同梱Arの 10 Pa（1周期のうちに非等方成分がほぼ減衰し、エネルギー緩和は数千周期かかる条件）
+    import boltzpmp as bp
+
+    argon = bp.load_argon()
+    solver = PMSolver(
+        Mixture(argon.gases, p_Pa=10.0, T_K=300.0), eps_max_eV=40.0, d_eps_eV=0.2, n_theta=16
+    )
+    result = solver.solve_rf(10.0, 13.56e6, n_store=64)
+    assert result.converged
+    assert result.extra["n_cycles"] <= 40
+    assert result.extra["two_term_error"] is None
+    tight = solver.solve_rf(10.0, 13.56e6, n_store=64, tol=1e-9, init_n=result.n)
+    assert tight.converged
+    assert result.mean_energy_rms == pytest.approx(tight.mean_energy_rms, rel=1e-5)
+    assert result.drift_velocity_rms == pytest.approx(tight.drift_velocity_rms, rel=1e-5)
 
 
 def test_implicit_rf_rejects_invalid_options(ionizing: PMSolver) -> None:

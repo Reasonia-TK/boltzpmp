@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = np.load(ROOT / "reference" / "core_reference.npz")
 SOLVER_REFERENCE = np.load(ROOT / "reference" / "solver_reference.npz")
 METADATA = json.loads((ROOT / "reference" / "reference.json").read_text(encoding="utf-8"))
+RF_WAVEFORMS = np.load(ROOT / "reference" / "rf_waveform_reference.npz")
 
 
 def reference_solver() -> PMSolver:
@@ -175,16 +176,26 @@ def test_rf_matches_reference(solver: PMSolver) -> None:
         method="explicit",
     )
     assert result.extra["steps_per_cycle"] == config["steps_per_cycle"]
+    # 時間発展そのものは変えていないので、最終状態は旧Python版の基準と一致する
     np.testing.assert_allclose(result.n, SOLVER_REFERENCE["rf_n"], rtol=1e-8, atol=1e-12)
+    # 0.5.0 から保存点は周期全体に等間隔（時刻 m_i Δt、m_i = round(i N / n)）で、時刻0の値は周期の終わりの状態
+    steps = result.extra["steps_per_cycle"]
+    count = len(result.time_grid)
+    slots = np.array([round(i * steps / count) % steps for i in range(count)])
+    np.testing.assert_allclose(result.time_grid, slots * result.extra["dt"], rtol=1e-12, atol=0)
+    mesh = result.mesh
+    energy_end = np.sum(mesh.eps_c * result.n.reshape(mesh.n_eps, mesh.n_theta).sum(axis=1))
+    assert result.mean_energy_t[0] == pytest.approx(energy_end, rel=1e-12)
+    # 波形は 0.5.0 で作った基準（benchmarks/generate_rf_waveforms.py）と比べる
     np.testing.assert_allclose(
         result.mean_energy_t,
-        SOLVER_REFERENCE["rf_mean_energy"],
+        RF_WAVEFORMS["mean_energy_t"],
         rtol=1e-8,
         atol=1e-12,
     )
     np.testing.assert_allclose(
         result.drift_velocity_t,
-        SOLVER_REFERENCE["rf_drift_velocity"],
+        RF_WAVEFORMS["drift_velocity_t"],
         rtol=1e-8,
         atol=1e-8,
     )

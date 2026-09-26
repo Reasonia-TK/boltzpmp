@@ -48,6 +48,14 @@ class SwarmResult:
 
 @dataclass(kw_only=True)
 class SwarmResultRF(SwarmResult):
+    """RFの周期定常解。
+
+    - `eedf`、`eepf`、`rate_coefficients` などの基底クラスの値は、電場の大きさが最大の時刻の値
+      （0.4 までと同じ）。`mean_energy`、`drift_velocity`、`reduced_ionization_frequency` は波形の実効値。
+    - `*_avg` は最後の1周期で時間平均した値（0.5 から）。プラズマの速度係数には周期平均を使う。
+    - `eedf_t` は保存点ごとの EEDF（形は `(len(time_grid), len(energy_grid))`、eV⁻¹）。
+    """
+
     time_grid: np.ndarray
     mean_energy_t: np.ndarray
     drift_velocity_t: np.ndarray
@@ -58,3 +66,10 @@ class SwarmResultRF(SwarmResult):
     mean_energy_rms: float
     drift_velocity_rms: float
     nu_ion_rms_over_N: float
+    mean_energy_avg: float = float("nan")
+    eedf_avg: np.ndarray = field(default_factory=lambda: np.empty(0))
+    eepf_avg: np.ndarray = field(default_factory=lambda: np.empty(0))
+    rate_coefficients_avg: dict[str, float] = field(default_factory=dict)
+    reduced_ionization_frequency_avg: float = float("nan")
+    reduced_attachment_frequency_avg: float = float("nan")
+    eedf_t: np.ndarray = field(default_factory=lambda: np.empty((0, 0)))

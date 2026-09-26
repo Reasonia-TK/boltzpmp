@@ -14,6 +14,7 @@ mod operators;
 mod output;
 pub mod processes;
 mod solver;
+mod two_term;
 
 pub use constants::{AMU, E_CHARGE, K_B, M_E, TOWNSEND, kelvin_to_ev, speed_from_ev};
 pub use lxcat::{CrossSection, Kind, LevelState, ParseError, Table};
