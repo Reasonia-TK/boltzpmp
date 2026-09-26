@@ -55,8 +55,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eps-max-ev", type=float, default=60.0)
     parser.add_argument("--d-eps-ev", type=float, default=0.5)
     parser.add_argument("--n-theta", type=int, default=48)
-    parser.add_argument("--scheme", choices=("blending", "upwind"), default="blending")
-    parser.add_argument("--tol", type=float, default=1e-5)
+    parser.add_argument("--scheme", choices=("limiter", "upwind", "blending"), default="limiter")
+    parser.add_argument(
+        "--method",
+        choices=("implicit", "explicit"),
+        default="implicit",
+        help="blending（ξの探索）は explicit だけで使える",
+    )
+    parser.add_argument("--tol", type=float, default=None, help="省略時は方法ごとの既定値")
     parser.add_argument("--max-steps", type=int, default=1_000_000)
     parser.add_argument("--check-every", type=int, default=200)
     parser.add_argument("--max-tail-ratio", type=float, default=1e-6)
@@ -101,7 +107,8 @@ def solve_eedf_sweep(
     fields_td: list[float],
     *,
     scheme: str,
-    tol: float,
+    method: str,
+    tol: float | None,
     max_steps: int,
     check_every: int,
     max_tail_ratio: float,
@@ -113,6 +120,7 @@ def solve_eedf_sweep(
         result = solver.solve_dc(
             EN_Td=field_td,
             scheme=scheme,
+            method=method,
             tol=tol,
             max_steps=max_steps,
             check_every=check_every,
@@ -224,6 +232,7 @@ def main() -> None:
         solver,
         fields_td,
         scheme=args.scheme,
+        method=args.method,
         tol=args.tol,
         max_steps=args.max_steps,
         check_every=args.check_every,
