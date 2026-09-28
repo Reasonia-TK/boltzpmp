@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from boltzpmp import CrossSection, Gas, Mixture, PMSolver, graded_energy_grid, parse_lxcat
-from boltzpmp.constants import E_CHARGE
+from boltzpmp.constants import AMU, E_CHARGE, M_E
 
 K_B_EV = 1.380649e-23 / E_CHARGE
 THERMAL_MEAN = 1.5 * K_B_EV * 300.0  # 3/2 kT (eV)
+GAMMA = np.sqrt(2.0 * E_CHARGE / M_E)  # 速度 = γ √ε
+ARGON = Path(__file__).resolve().parents[2] / "examples" / "data" / "Ar_IST-Lisbon_LXCat.txt"
 
 pytestmark = pytest.mark.filterwarnings("ignore:EEPF at eps_max.*")
 
@@ -85,6 +89,106 @@ def test_gas_heating_thermalizes_elastic_gas() -> None:
     assert discrete_mean == pytest.approx(THERMAL_MEAN, rel=0.06)
     cold = PMSolver(mixture, eps_max_eV=0.3, d_eps_eV=0.005, n_theta=8, gas_heating=False)
     assert solve(cold, 0.01, tol=1e-6, init_T_eV=0.035).mean_energy < 0.5 * THERMAL_MEAN
+
+
+def test_thermal_exchange_does_not_scatter_electrons() -> None:
+    # 熱運動によるエネルギー交換は向きを変えない。0.5.0 までは跳びのたびに等方に再注入し、刻みの2乗に反比例
+    # する余分な運動量移行でドリフト速度を下げていた（この気体の 2 meV 刻みで約半分）。熱平衡の分布の
+    # ドリフト速度は、一定の断面積なら w = 2γ(E/N)/(3√π σ √kT)
+    mixture = Mixture([Gas("G", 1.0, [elastic()])], N=3.2e22, T_K=300.0)
+    expected = 2.0 * GAMMA * 0.01e-21 / (3.0 * np.sqrt(np.pi) * 1e-19 * np.sqrt(K_B_EV * 300.0))
+    for d_eps in (0.004, 0.001):
+        result = PMSolver(mixture, eps_max_eV=0.5, d_eps_eV=d_eps, n_theta=16).solve_dc(0.01)
+        assert result.converged
+        assert result.drift_velocity == pytest.approx(expected, rel=0.005), d_eps
+
+
+def davydov(section: CrossSection, mass_ratio: float, en_td: float) -> tuple[float, float]:
+    """弾性衝突だけの二項近似の定常解（Davydov 分布）の平均エネルギー (eV) と換算移動度 (1/(V m s))。"""
+    kt = K_B_EV * 300.0
+    eps = np.linspace(1e-7, 5.0, 200_001)
+    sigma = section.sigma(eps)
+    # f ∝ exp(−∫ dε / (kT + (M/6m)(E/N)²/(ε σ²)))
+    scale = kt + (en_td * 1e-21) ** 2 / (6.0 * mass_ratio * eps * sigma**2)
+    exponent = np.concatenate(([0.0], np.cumsum(0.5 * (1 / scale[1:] + 1 / scale[:-1]) * np.diff(eps))))
+    f = np.exp(-exponent)
+    norm = np.trapezoid(np.sqrt(eps) * f, eps)
+    mean = np.trapezoid(eps**1.5 * f, eps) / norm
+    mobility = GAMMA / 3.0 * np.trapezoid(eps / sigma * f / scale, eps) / norm
+    return float(mean), float(mobility)
+
+
+def test_low_field_argon_converges_to_two_term_solution() -> None:
+    # 熱平衡に近い低い E/N（Ar の 0.0025 Td、非等方成分は約 0.2%）では Davydov 分布がほぼ厳密で、格子を
+    # 細かくするとそれに近づく（0.5.0 までは細かくするほど離れ、1200 セルで移動度が 25% 小さかった）
+    sections = parse_lxcat(ARGON)
+    mixture = Mixture([Gas("Ar", 1.0, sections, mass_amu=39.948)], p_Pa=133.0, T_K=300.0)
+    mean, mobility = davydov(sections[0], M_E / (39.948 * AMU), 0.0025)
+    for cells, tolerance in ((300, 0.01), (1200, 0.002)):
+        solver = PMSolver(mixture, eps_max_eV=1.0, d_eps_eV=1.0 / cells, n_theta=32)
+        result = solver.solve_dc(0.0025)
+        assert result.converged
+        assert result.mean_energy == pytest.approx(mean, rel=tolerance), cells
+        assert result.drift_velocity / 0.0025e-21 == pytest.approx(mobility, rel=tolerance), cells
+
+
+EFFECTIVE_SET = """
+EFFECTIVE
+G
+ 1e-4
+-----
+ 0.0 5e-20
+ 20.0 5e-20
+ 100.0 3e-20
+-----
+EXCITATION
+G -> G*
+ 5.0
+-----
+ 5.0 0.0
+ 10.0 1e-20
+ 100.0 1e-20
+-----
+IONIZATION
+G -> G^+
+ 12.0
+-----
+ 12.0 0.0
+ 30.0 1e-20
+ 100.0 1e-20
+-----
+"""
+
+
+def test_effective_is_elastic_minus_inelastic() -> None:
+    # EFFECTIVE（全運動量移行断面積）から非弾性断面積を引いた ELASTIC と同じ結果になる（BOLSIG+ と同じ）
+    sections = parse_lxcat(EFFECTIVE_SET)
+    effective, inelastic = sections[0], sections[1:]
+    energy = np.unique(np.concatenate([section.data[:, 0] for section in sections]))
+    table = np.column_stack(
+        [energy, effective.sigma(energy) - sum(section.sigma(energy) for section in inelastic)]
+    )
+    elastic_set = CrossSection(
+        kind="ELASTIC", species="G", name=effective.name, mass_ratio=effective.mass_ratio, data=table
+    )
+    results = []
+    for first in (effective, elastic_set):
+        mixture = Mixture([Gas("G", 1.0, [first, *inelastic])], N=3.2e22, T_K=300.0)
+        solver = PMSolver(mixture, eps_max_eV=40.0, d_eps_eV=0.1, n_theta=12)
+        results.append(solver.solve_dc(50.0))
+    converted, reference = results
+    assert converted.converged and reference.converged
+    assert converted.mean_energy == pytest.approx(reference.mean_energy, rel=1e-9)
+    assert converted.drift_velocity == pytest.approx(reference.drift_velocity, rel=1e-9)
+    for key, value in reference.rate_coefficients.items():
+        assert converted.rate_coefficients[key] == pytest.approx(value, rel=1e-9), key
+
+
+def test_effective_below_inelastic_warns() -> None:
+    sections = parse_lxcat(EFFECTIVE_SET.replace(" 100.0 3e-20", " 100.0 1e-20"))
+    mixture = Mixture([Gas("G", 1.0, sections)], N=3.2e22)
+    with pytest.warns(UserWarning, match="EFFECTIVE .* is negative"):
+        PMSolver(mixture, eps_max_eV=40.0, d_eps_eV=0.1, n_theta=12)
 
 
 def test_limiter_scheme_removes_upwind_heating() -> None:

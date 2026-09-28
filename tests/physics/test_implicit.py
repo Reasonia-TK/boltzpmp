@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from boltzpmp import CrossSection, Gas, Mixture, PMSolver, parse_lxcat
 
 pytestmark = pytest.mark.filterwarnings("ignore:EEPF at eps_max.*")
+
+ARGON = Path(__file__).resolve().parents[2] / "examples" / "data" / "Ar_IST-Lisbon_LXCat.txt"
 
 
 def table(values: list[tuple[float, float]]) -> np.ndarray:
@@ -133,6 +137,23 @@ G
         )
         assert result.mean_energy == pytest.approx(explicit.mean_energy, rel=2e-5)
         assert result.drift_velocity == pytest.approx(explicit.drift_velocity, rel=2e-5)
+
+
+def test_implicit_converges_near_thermal_equilibrium_in_argon() -> None:
+    # Ramsauer 極小の近くの低い E/N で粗い格子（刻み kT/4）では、合成加速の補正が行き過ぎて反復が周期的に
+    # 振動し、収束しなかった（0.5.0）。発散したら補正を弱め、それまでで最良の反復からやり直す
+    mixture = Mixture(
+        [Gas("Ar", 1.0, parse_lxcat(ARGON), mass_amu=39.948)], p_Pa=133.0, T_K=300.0
+    )
+    solver = PMSolver(mixture, eps_max_eV=1.144, d_eps_eV=1.144 / 165, n_theta=32)
+    result = solver.solve_dc(0.0046, max_steps=1000)
+    assert result.converged
+    assert result.n_steps < 100
+    # 近くの E/N の解から始めた反復（0.5.0 でも収束した）と同じ解になる
+    warm = solver.solve_dc(0.0046, init_n=solver.solve_dc(0.002).n)
+    assert warm.converged
+    assert result.mean_energy == pytest.approx(warm.mean_energy, rel=1e-6)
+    assert result.drift_velocity == pytest.approx(warm.drift_velocity, rel=1e-6)
 
 
 def test_implicit_rejects_xi_search() -> None:

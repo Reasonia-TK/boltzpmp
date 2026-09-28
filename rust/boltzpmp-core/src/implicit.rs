@@ -28,6 +28,8 @@
 //! 和をとると c/Δt·Σn' = Σh となるので、和が1の解はそのまま時間発展の解になる。1段では対角の c/Δt が
 //! 大きく、ソース反復が数回で収束するので、合成加速は使わない。
 
+use std::cell::RefCell;
+
 use crate::{
     AdvectionOperator, AdvectionScheme, CollisionOperator, VelocityMesh,
     operators::UpwindSweep,
@@ -231,14 +233,15 @@ impl<'a> ImplicitProblem<'a> {
         )
     }
 
-    /// 合成加速の補正 `next ← next + β E δ`、`L₂ δ = P [S(next) − S(x)]`（和は1のまま、β は
-    /// `SYNTHETIC_DAMPING`）。
+    /// 合成加速の補正 `next ← next + β E δ`、`L₂ δ = P [S(next) − S(x)]`（和は1のまま、β は `damping`。
+    /// 既定は `SYNTHETIC_DAMPING`）。
     ///
     /// S は `map` で前の反復の値を使う項。再注入などは線形なので S(next − x) で計算する。高次の移流の補正
     /// a(A − A_up) は、制限関数スキームでは非線形なので、`map` が `work` に残した x での値との差をとる。
     fn synthetic_correction(
         &self,
         solver: &TwoTermSolver,
+        damping: f64,
         growth: f64,
         x: &[f64],
         next: &mut [f64],
@@ -299,7 +302,7 @@ impl<'a> ImplicitProblem<'a> {
         solver.solve_zero_sum(&work.energy_rhs, &mut work.energy_delta);
         for (row, delta) in next.chunks_mut(n_theta).zip(&work.energy_delta) {
             for (value, weight) in row.iter_mut().zip(&self.mesh.w_theta) {
-                *value += SYNTHETIC_DAMPING * delta * weight;
+                *value += damping * delta * weight;
             }
         }
         clip_and_normalize(next)
@@ -430,6 +433,8 @@ impl DiffusionAcceleration {
 struct Synthetic {
     solver: Option<TwoTermSolver>,
     error: Option<String>,
+    /// 補正の係数 β。反復が発散したら `weaken` で下げる。
+    damping: f64,
 }
 
 /// 合成加速の補正に掛ける係数 β。
@@ -438,13 +443,20 @@ struct Synthetic {
 /// 補正が行き過ぎて振動し、β = 1 では収束しないことがある。遅いモードの誤差の倍率は 1 − β μ/μ₂
 /// （μ, μ₂ は真の演算子と L₂ の固有値）なので、μ/μ₂ < 2/β なら安定になる（β = 0.7 で約 2.9 倍まで）。
 /// 同梱 Ar と HF の DC では、β = 0.55〜0.85 でほぼ同じ反復回数だった。
+///
+/// 熱平衡に近い低い E/N の粗い格子（Ar の 0.005 Td、刻み kT/4 など）では μ/μ₂ がこれを超え、β = 0.7 の
+/// 補正で反復が発散して周期的な振動に入った（β = 0.3 以下では数十反復で収束）。反復が発散したら β を
+/// `DAMPING_REDUCTION` 倍に下げて、それまでで残差が最小の反復からやり直す（`MIN_SYNTHETIC_DAMPING` まで）。
 const SYNTHETIC_DAMPING: f64 = 0.7;
+const DAMPING_REDUCTION: f64 = 0.5;
+const MIN_SYNTHETIC_DAMPING: f64 = 0.05;
 
 impl Synthetic {
     fn new() -> Self {
         Self {
             solver: None,
             error: None,
+            damping: SYNTHETIC_DAMPING,
         }
     }
 
@@ -456,10 +468,21 @@ impl Synthetic {
         next: &mut [f64],
         work: &mut Buffers,
     ) -> Result<(), String> {
+        let damping = self.damping;
         match self.ensure(problem) {
-            Some(solver) => problem.synthetic_correction(solver, growth, x, next, work),
+            Some(solver) => problem.synthetic_correction(solver, damping, growth, x, next, work),
             None => Ok(()),
         }
+    }
+
+    /// 補正を弱める（β を下げる）。下げられた（補正を使っていて、下限に達していない）ら `true`。
+    fn weaken(&mut self) -> bool {
+        let damping = self.damping * DAMPING_REDUCTION;
+        if self.solver.is_none() || damping < MIN_SYNTHETIC_DAMPING {
+            return false;
+        }
+        self.damping = damping;
+        true
     }
 
     /// 演算子（初めて呼ばれたときに作る）。作れなければ `None`（理由は `error`）。
@@ -638,11 +661,16 @@ pub(crate) fn solve(
             }
         }
     }
+    let synthetic = RefCell::new(synthetic);
     let outcome = iterate(
         |x, g| {
             let growth = problem.map(x, g, &mut work)?;
-            synthetic.correct(problem, growth, x, g, &mut work)
+            synthetic
+                .borrow_mut()
+                .correct(problem, growth, x, g, &mut work)
         },
+        // 合成加速の補正で発散したら、補正を弱めてやり直す（`SYNTHETIC_DAMPING` を参照）
+        || synthetic.borrow_mut().weaken(),
         &start,
         tol,
         max_iterations,
@@ -652,13 +680,17 @@ pub(crate) fn solve(
         state: outcome.state,
         converged: outcome.converged,
         iterations: outcome.iterations,
-        acceleration_error: synthetic.error,
+        acceleration_error: synthetic.into_inner().error,
     })
 }
 
 /// 不動点 `x = g(x)`（`g` は和が1の状態を返す）を Anderson 加速で求める。残差は `‖g(x) − x‖₁`。
-pub(crate) fn iterate<F>(
+///
+/// 残差がそれまでの最小値の10倍を超えたら、加速の履歴を捨てる。そのとき `on_divergence` が `true` を返したら
+/// （写像を変えたら）、残差が最小だった反復からやり直す。
+pub(crate) fn iterate<F, D>(
     mut map: F,
+    mut on_divergence: D,
     initial: &[f64],
     tol: f64,
     max_iterations: usize,
@@ -666,11 +698,13 @@ pub(crate) fn iterate<F>(
 ) -> Result<ImplicitOutcome, String>
 where
     F: FnMut(&[f64], &mut [f64]) -> Result<(), String>,
+    D: FnMut() -> bool,
 {
     let mut x = initial.to_vec();
     clip_and_normalize(&mut x)?;
     let mut g = vec![0.0; x.len()];
     let mut next = vec![0.0; x.len()];
+    let mut best_x = x.clone();
     let mut anderson = Anderson::new(depth);
     let mut best = f64::INFINITY;
     for iteration in 1..=max_iterations {
@@ -686,8 +720,15 @@ where
         // 残差が最良値から大きく悪化したら加速の履歴を捨てる
         if residual > 10.0 * best {
             anderson.reset();
+            if on_divergence() {
+                x.copy_from_slice(&best_x);
+                continue;
+            }
         }
-        best = best.min(residual);
+        if residual < best {
+            best = residual;
+            best_x.copy_from_slice(&x);
+        }
         if depth == 0 {
             std::mem::swap(&mut x, &mut g);
             continue;
@@ -895,6 +936,7 @@ impl<'a> TimeStepper<'a> {
     ) -> Result<ImplicitOutcome, String> {
         iterate(
             |x, g| self.map(coefficients, x, g, &mut work.inner),
+            || false,
             guess,
             tol,
             max_iterations,

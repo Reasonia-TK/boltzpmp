@@ -12,7 +12,7 @@ matplotlib が必要です（`uv pip install matplotlib`）。出力は既定で
 | `04_molecular_gas.py` | 架空の分子気体で、回転励起と逆過程（ROTATION ブロック）、気体温度、異方散乱（表の3列目）、付着を比べる。RF の周期平均の付着周波数も求める | 約30秒 |
 | `dc_argon.py` | いちばん短い DC の例 | 1秒未満 |
 | `export_comsol_eedf.py` | COMSOL の Plasma インターフェース用の2引数 EEDF 表を書く | 数秒 |
-| `lxcat_to_comsol.ipynb` | 任意の LXCat 断面積から、COMSOL 用の EEDF（2引数の表）と換算電子移動度を作るノートブック。主ガスとラジカルのモル分率を指定し、断面積を表の外へ外挿し（定数・0・線形・べき乗則・多項式・Bethe 型）、平均電子エネルギーの範囲を指定して解く（E/N は求根で決める）。外挿した断面積も LXCat 形式で書き出す | 約20秒 |
+| `lxcat_to_comsol.ipynb` | 任意の LXCat 断面積から、COMSOL 用の EEDF（2引数の表）と換算電子移動度を作るノートブック。主ガスとラジカルのモル分率を指定し、断面積を表の外へ外挿し（定数・0・線形・べき乗則・多項式・Bethe 型）、平均電子エネルギーの範囲を指定して解く（E/N は求根で決める）。外挿した断面積も LXCat 形式で書き出す。熱平衡に近い低い平均エネルギーの精度と収束は 0.6.0 で改善した | 約10秒 |
 | `export_comsol_eedf_sweep.ipynb`、`lxcat_electron_swarm.ipynb` | LXCat の断面積を使うノートブック | — |
 | `validate_against_references.py` | 他のソルバー（BOLOS など）の結果との比較（参照データが必要） | — |
 

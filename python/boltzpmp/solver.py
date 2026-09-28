@@ -26,6 +26,9 @@ class PMSolver:
     断面積の表に運動量移行断面積（`CrossSection.mt_data`、LXCat表の3列目）があれば、
     その比から遮蔽Rutherford型の角度分布を作り、異方散乱として扱う。
 
+    EFFECTIVE（全運動量移行断面積）は、同じ標的の EXCITATION（しきい値が0以上）・IONIZATION・ATTACHMENT を
+    引いた弾性衝突の運動量移行断面積として使う（BOLSIG+ と同じ）。引いた値が負になるところは0にして警告する。
+
     移流スキーム（`solve_dc`などの`scheme`）:
     - `limiter`（既定）: van Leer制限関数の2次精度TVDスキーム。負の値を作らない。
     - `upwind`: 1次精度。刻みと電場に比例する数値拡散で平均エネルギーを高めに出す。
@@ -76,6 +79,9 @@ class PMSolver:
             self.gas_heating,
         )
         self.mesh = VelocityMesh._from_data(self._core_solver.mesh_data())
+        for process in self._core_solver.processes():
+            if process["warning"]:
+                warnings.warn(process["warning"], stacklevel=2)
 
     def processes(self) -> list[dict[str, Any]]:
         """組み立てた衝突過程（逆過程を含む）の一覧。"""

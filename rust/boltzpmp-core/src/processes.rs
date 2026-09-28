@@ -10,6 +10,11 @@
 //!   生成物の気体がこの明示的な逆過程を持つときは、自動の逆過程を作らない（二重計上の防止）。
 //!
 //! 逆過程の断面積は詳細釣り合い `σ_sup(ε) = (g_low/g_up) (ε+u)/ε σ(ε+u)` をセル中心で直接評価する。
+//!
+//! EFFECTIVE（全運動量移行断面積）は、同じ標的の EXCITATION（しきい値が0以上）・IONIZATION・ATTACHMENT の
+//! 断面積を引いた、弾性衝突の運動量移行断面積として使う（BOLSIG+、BOLOS と同じ。負になるところは0）。
+//! 非弾性衝突はそれぞれの過程で電子を散乱させるので、引かないと非弾性衝突の運動量移行を二重に数える。
+//! ROTATION は引かない。
 
 use std::collections::HashMap;
 
@@ -60,11 +65,28 @@ pub fn build_processes(
             section.validate()?;
             let centres =
                 |f: &dyn Fn(f64) -> f64| mesh.eps_c.iter().map(|e| f(*e)).collect::<Vec<_>>();
-            let sigma = centres(&|e| section.sigma_at(e));
-            let sigma_mt = section
-                .momentum_transfer
-                .as_ref()
-                .map(|_| centres(&|e| section.momentum_transfer_at(e).expect("present")));
+            // EFFECTIVE から引く非弾性断面積（ほかの種類では空）
+            let subtracted = if section.kind == Kind::Effective {
+                effective_inelastic(gas, section)
+            } else {
+                Vec::new()
+            };
+            let elastic_part = |value: f64, e: f64| {
+                if subtracted.is_empty() {
+                    value
+                } else {
+                    (value
+                        - subtracted
+                            .iter()
+                            .map(|other| other.sigma_at(e))
+                            .sum::<f64>())
+                    .max(0.0)
+                }
+            };
+            let sigma = centres(&|e| elastic_part(section.sigma_at(e), e));
+            let sigma_mt = section.momentum_transfer.as_ref().map(|_| {
+                centres(&|e| elastic_part(section.momentum_transfer_at(e).expect("present"), e))
+            });
             let base = |kind: ProcessKind, fraction: f64, threshold: f64, mass_ratio: f64| {
                 let mut spec = ProcessSpec::new(
                     gas.name.clone(),
@@ -92,13 +114,15 @@ pub fn build_processes(
                             mesh.eps_b[1..mesh.n_eps]
                                 .iter()
                                 .map(|e| {
-                                    section
+                                    let value = section
                                         .momentum_transfer_at(*e)
-                                        .unwrap_or_else(|| section.sigma_at(*e))
+                                        .unwrap_or_else(|| section.sigma_at(*e));
+                                    elastic_part(value, *e)
                                 })
                                 .collect(),
                         );
                     }
+                    spec.warning = effective_warning(gas, section, &subtracted);
                     specs.push(spec);
                 }
                 Kind::Ionization => {
@@ -182,6 +206,69 @@ pub fn build_processes(
         }
     }
     Ok(specs)
+}
+
+/// EFFECTIVE の断面積から引く、同じ気体・同じ標的の非弾性断面積（EXCITATION はしきい値が0以上のもの）。
+fn effective_inelastic<'a>(gas: &'a Gas, effective: &CrossSection) -> Vec<&'a CrossSection> {
+    gas.cross_sections
+        .iter()
+        .filter(|other| {
+            other.target() == effective.target()
+                && match other.kind {
+                    Kind::Excitation => other.threshold_ev >= 0.0,
+                    Kind::Ionization | Kind::Attachment => true,
+                    _ => false,
+                }
+        })
+        .collect()
+}
+
+/// EFFECTIVE から非弾性断面積を引いた値が負になる（0にした）ときの注意。表の点で調べるので、格子によらない。
+fn effective_warning(
+    gas: &Gas,
+    effective: &CrossSection,
+    subtracted: &[&CrossSection],
+) -> Option<String> {
+    if subtracted.is_empty() {
+        return None;
+    }
+    let (first, last) = (
+        effective.table.energy[0],
+        *effective
+            .table
+            .energy
+            .last()
+            .expect("validated non-empty table"),
+    );
+    let mut energies: Vec<f64> = effective
+        .table
+        .energy
+        .iter()
+        .chain(
+            subtracted
+                .iter()
+                .flat_map(|other| other.table.energy.iter()),
+        )
+        .copied()
+        .filter(|e| (first..=last).contains(e))
+        .collect();
+    energies.sort_by(f64::total_cmp);
+    let negative: Vec<f64> = energies
+        .into_iter()
+        .filter(|e| {
+            let total = effective.sigma_at(*e);
+            let inelastic: f64 = subtracted.iter().map(|other| other.sigma_at(*e)).sum();
+            total - inelastic < -1.0e-6 * total.max(inelastic)
+        })
+        .collect();
+    let (low, high) = (negative.first()?, negative.last()?);
+    Some(format!(
+        "{}: EFFECTIVE {:?} minus the inelastic cross sections of {} is negative at {low}-{high} eV; \
+         the elastic momentum-transfer cross section is set to 0 there",
+        gas.name,
+        effective.name,
+        effective.target()
+    ))
 }
 
 /// 詳細釣り合いによる逆過程。`weight`は g_up/g_low。
@@ -401,5 +488,47 @@ ROTATION\nHF\n 0.005 3.0\n 0.015 5.0\n-----\n 0.010 0\n 1.0 1e-19\n-----\n";
         )
         .unwrap();
         assert_eq!(cold[0].gas_temperature_ev, 0.0);
+    }
+
+    const EFFECTIVE_SET: &str = "EFFECTIVE\nHF\n 2.7e-5\n-----\n 0 1e-19\n 20 1e-19\n-----\n\
+EXCITATION\nHF -> HF*\n 5.0\n-----\n 5 0\n 10 2e-20\n 20 2e-20\n-----\n\
+IONIZATION\nHF -> HF^+\n 10.0\n-----\n 10 0\n 20 3e-20\n-----\n\
+ATTACHMENT\nHF\n-----\n 0 1e-21\n 20 1e-21\n-----\n\
+EXCITATION\nX -> X*\n 1.0\n-----\n 1 0\n 20 5e-20\n-----\n";
+
+    #[test]
+    fn effective_subtracts_inelastic_of_the_same_target() {
+        let mix = mixture(EFFECTIVE_SET, 300.0);
+        let mesh = VelocityMesh::new(20.0, 0.1, 4).unwrap();
+        let specs = build_processes(&mix, &mesh, ModelOptions::default()).unwrap();
+        let effective = &specs[0];
+        assert_eq!(effective.kind, ProcessKind::Effective);
+        assert_eq!(effective.warning, None);
+        let sections = &mix.gases[0].cross_sections;
+        // 同じ標的（HF）の励起・電離・付着を引き、別の標的（X）の励起は引かない
+        let elastic = |e: f64| {
+            sections[0].sigma_at(e)
+                - sections[1].sigma_at(e)
+                - sections[2].sigma_at(e)
+                - sections[3].sigma_at(e)
+        };
+        for (i, e) in mesh.eps_c.iter().enumerate() {
+            assert!(
+                (effective.sigma[i] - elastic(*e)).abs() <= 1e-12 * elastic(*e),
+                "{e}"
+            );
+        }
+        let edges = effective.sigma_mt_edges.as_ref().unwrap();
+        for (value, e) in edges.iter().zip(&mesh.eps_b[1..]) {
+            assert!((value - elastic(*e)).abs() <= 1e-12 * elastic(*e), "{e}");
+        }
+        // 引いた値が負になるところは0にして、注意を残す
+        let small = EFFECTIVE_SET.replacen(" 20 1e-19", " 20 4e-20", 1);
+        let mix = mixture(&small, 300.0);
+        let specs = build_processes(&mix, &mesh, ModelOptions::default()).unwrap();
+        assert!(specs[0].sigma.iter().all(|value| *value >= 0.0));
+        assert_eq!(specs[0].sigma[mesh.n_eps - 1], 0.0);
+        let warning = specs[0].warning.as_deref().unwrap();
+        assert!(warning.contains("is negative at"), "{warning}");
     }
 }

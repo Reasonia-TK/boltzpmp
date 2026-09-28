@@ -375,6 +375,7 @@ impl PyCoreSolver {
                 dict.set_item("threshold", process.threshold_ev)?;
                 dict.set_item("anisotropic", process.sigma_mt.is_some())?;
                 dict.set_item("gas_temperature_eV", process.gas_temperature_ev)?;
+                dict.set_item("warning", process.warning.as_deref())?;
                 Ok(dict.unbind())
             })
             .collect()

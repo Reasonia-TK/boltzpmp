@@ -64,6 +64,8 @@ results = bp.solve_dc_sweep(
 - 反応式の `<->`（逆過程の標的を、生成物の気体とする）
 - ROTATIONブロック（3行目と4行目に下準位・上準位の「エネルギー 統計重み」）
 - 表の3列目（運動量移行断面積。このとき2列目は積分断面積として扱う）
+- EFFECTIVE（全運動量移行断面積）。0.6.0から、同じ標的の EXCITATION（しきい値が0以上）・IONIZATION・ATTACHMENT を
+  引いた弾性衝突の運動量移行断面積として使います（BOLSIG+と同じ。負になるところは0にして警告。ROTATIONは引かない）。
 
 ## 物理モデル
 
@@ -78,7 +80,8 @@ results = bp.solve_dc_sweep(
   - 占有の温度は `Mixture(T_K=..., T_exc_K=..., transition_energy_eV=...)` で与えます
     （BOLSIG+のGas temperature、Excitation temperature、Transition energy。`T_exc_K`の既定は`T_K`）。
 - 気体温度による弾性衝突のエネルギー交換（`gas_heating=True`）。電場がなければ格子上のMaxwell分布が
-  厳密な定常解になるように離散化しています。
+  厳密な定常解になるように離散化しています。0.6.0から、隣のエネルギーセルへ移すときに電子の向きを変えません
+  （0.5.0までは等方に再注入していたため、熱平衡に近い低い E/N で格子を細かくするほどドリフト速度が下がった）。
 
 断面積に運動量移行断面積（`CrossSection.mt_data` または表の3列目）があると、その比 σ_m/σ から
 遮蔽Rutherford型の角度分布（Okhrimovskyy et al., Phys. Rev. E 65, 037402 (2002)）を作り、
@@ -94,6 +97,8 @@ results = bp.solve_dc_sweep(
 - 0.5.0から、ソース反復では進みの遅いエネルギー緩和を、エネルギーだけの二項近似の演算子で直接解いて補正します
   （合成加速）。`init_n` を与えなければ、その二項近似の定常解から始めます。
   - 二項近似を使えなかったとき（帯行列が大きすぎるなど）は、理由が `extra["two_term_error"]` に入ります。
+  - 0.6.0から、補正で反復が発散したら（残差がそれまでの最小値の10倍を超えたら）、補正を半分に弱めて、残差が最小
+    だった反復からやり直します（熱平衡に近い低い E/N の粗い格子で、補正が行き過ぎて振動することがあった）。
 - 電離・付着による電子数の増減は、陽解法と同じく和を1に保つ規格化として扱います。
 - `tol`（既定1e-8）は1反復の残差 ‖g(n) − n‖₁、`max_steps` は反復回数の上限です。
 - `scheme="blending"`（ξの探索）は陽解法だけで使えます。
@@ -206,7 +211,7 @@ uv run --with scipy --extra test python benchmarks\validate_lxcat.py `
   --output reference\lxcat_morgan_argon_validation.json
 ```
 
-現在のテスト構成はRust単体テスト28件、Python API・物理テスト38件です。
+現在のテスト構成はRust単体テスト33件、Python API・物理テスト54件です。
 
 ## パッケージ公開
 

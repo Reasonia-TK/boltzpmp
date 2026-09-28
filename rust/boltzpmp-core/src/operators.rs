@@ -47,6 +47,8 @@ pub struct ProcessSpec {
     pub gas_temperature_ev: f64,
     /// 内側のセル境界での運動量移行断面積（気体温度を入れた弾性衝突で使う）。
     pub sigma_mt_edges: Option<Vec<f64>>,
+    /// 組み立てたときの注意（EFFECTIVE から非弾性断面積を引いた値が負になったなど）。
+    pub warning: Option<String>,
 }
 
 impl ProcessSpec {
@@ -71,6 +73,7 @@ impl ProcessSpec {
             sigma_mt: None,
             gas_temperature_ev: 0.0,
             sigma_mt_edges: None,
+            warning: None,
         }
     }
 
@@ -382,6 +385,15 @@ struct Deposit {
     electrons: u8,
 }
 
+/// 向きを変えずにエネルギーだけを移す項（熱運動によるエネルギー交換）。`source` のエネルギーセルの
+/// 各角度セルの電子を、同じ角度セルのまま `target` のエネルギーセルへ移す。
+#[derive(Clone, Copy, Debug)]
+struct Transfer {
+    target: usize,
+    source: usize,
+    coefficient: f64,
+}
+
 /// 異方散乱の再注入。散乱後の角度分布は再分配核 `(1−w) K[node] + w K[node+1]` で与える。
 #[derive(Clone, Copy, Debug)]
 struct AnisotropicDeposit {
@@ -394,10 +406,11 @@ struct AnisotropicDeposit {
 #[derive(Clone, Debug)]
 pub struct CollisionOperator {
     pub nu_total: Vec<f64>,
-    /// 運動量移行の周波数（非等方成分の緩和の速さ）。異方散乱では `ν σ_m/σ`、ほかの過程と熱運動による
-    /// エネルギー交換では全衝突周波数と同じ（再注入が等方なので運動量をすべて失う）。
+    /// 運動量移行の周波数（非等方成分の緩和の速さ）。異方散乱では `ν σ_m/σ`、ほかの過程では衝突周波数と
+    /// 同じ（再注入が等方なので運動量をすべて失う）。熱運動によるエネルギー交換は向きを変えないので含まない。
     pub nu_momentum: Vec<f64>,
     deposits: Vec<Deposit>,
+    transfers: Vec<Transfer>,
     anisotropic: Vec<AnisotropicDeposit>,
     bank: Option<AngularBank>,
     pub processes: Vec<ProcessSpec>,
@@ -455,6 +468,7 @@ impl CollisionOperator {
         let mut nu_total = vec![0.0; mesh.n_eps];
         let mut nu_momentum = vec![0.0; mesh.n_eps];
         let mut deposits = Vec::new();
+        let mut transfers = Vec::new();
         let mut anisotropic = Vec::new();
         for (process, xi_row) in processes.iter().zip(&xi_rows) {
             let thermal = process.uses_gas_temperature();
@@ -514,13 +528,7 @@ impl CollisionOperator {
                 }
             }
             if thermal {
-                let before = nu_total.clone();
-                add_thermal_exchange(process, mesh, number_density, &mut nu_total, &mut deposits);
-                for ((momentum, after), before) in
-                    nu_momentum.iter_mut().zip(&nu_total).zip(&before)
-                {
-                    *momentum += after - before;
-                }
+                add_thermal_exchange(process, mesh, number_density, &mut nu_total, &mut transfers);
             }
         }
         anisotropic.sort_by_key(|deposit| deposit.source);
@@ -528,6 +536,7 @@ impl CollisionOperator {
             nu_total,
             nu_momentum,
             deposits,
+            transfers,
             anisotropic,
             bank,
             processes,
@@ -584,6 +593,14 @@ impl CollisionOperator {
                 }
             }
         }
+        let n = self.n_theta;
+        for transfer in &self.transfers {
+            let source = &state[transfer.source * n..(transfer.source + 1) * n];
+            let target = &mut output[transfer.target * n..(transfer.target + 1) * n];
+            for (value, electrons) in target.iter_mut().zip(source) {
+                *value += transfer.coefficient * electrons;
+            }
+        }
         if !self.anisotropic.is_empty() {
             self.apply_anisotropic(state, output);
         }
@@ -592,7 +609,7 @@ impl CollisionOperator {
     /// 等方な分布に対する再注入の係数 `(移る先, 元, 周波数, 1回の衝突で出る電子の数)`。
     /// エネルギーセルの電子数 u に対して、衝突の項の等方成分は `−ν_total[i] u[i] + Σ 周波数 × u[元]`
     /// （移る先 = i）になる。周波数は出る電子の数を含む（電離では衝突周波数の2倍）。
-    /// 異方散乱の再分配核は電子数を保つので、等方な分布では係数だけで決まる。
+    /// 異方散乱の再分配核と、向きを変えないエネルギー交換は電子数を保つので、等方な分布では係数だけで決まる。
     pub fn energy_couplings(&self) -> impl Iterator<Item = (usize, usize, f64, u8)> + '_ {
         let isotropic = self.deposits.iter().map(|deposit| {
             (
@@ -602,6 +619,10 @@ impl CollisionOperator {
                 deposit.electrons,
             )
         });
+        let transfers = self
+            .transfers
+            .iter()
+            .map(|transfer| (transfer.target, transfer.source, transfer.coefficient, 1));
         let anisotropic = self.anisotropic.iter().flat_map(|deposit| {
             deposit
                 .targets
@@ -609,6 +630,7 @@ impl CollisionOperator {
                 .map(move |(target, coefficient)| (*target, deposit.source, *coefficient, 1))
         });
         isotropic
+            .chain(transfers)
             .chain(anisotropic)
             .filter(|(_, _, coefficient, _)| *coefficient != 0.0)
     }
@@ -721,12 +743,16 @@ fn validate_process(process: &ProcessSpec, mesh: &VelocityMesh) -> Result<(), St
 ///
 /// 拡散の速度はセル幅の2乗に反比例して時間刻みを縮めるので、熱運動の効果が無視できる
 /// `THERMAL_EXCHANGE_LIMIT` × kT より上では、冷たい気体のエネルギー損失（跳び）に切り替える。
+///
+/// 隣のセルへの跳びは向き（角度セル）を変えない。この項は等方成分のエネルギー分布だけを変えるもので、
+/// 衝突による向きの変化は弾性衝突の過程そのもので入っている。等方に再注入すると、跳びの速さ（セル幅の
+/// 2乗に反比例）の分だけ運動量移行を多く数え、格子を細かくするほどドリフト速度と平均エネルギーが下がる。
 fn add_thermal_exchange(
     process: &ProcessSpec,
     mesh: &VelocityMesh,
     number_density: f64,
     nu_total: &mut [f64],
-    deposits: &mut Vec<Deposit>,
+    transfers: &mut Vec<Transfer>,
 ) {
     let kt = process.gas_temperature_ev;
     let edges_mt = process
@@ -748,18 +774,16 @@ fn add_thermal_exchange(
         let rate_up = diffusion / spacing * bernoulli(-z) / mesh.d_eps[lower];
         let rate_down = diffusion / spacing * bernoulli(z) / mesh.d_eps[upper];
         nu_total[lower] += rate_up;
-        deposits.push(Deposit {
+        transfers.push(Transfer {
             target: upper,
             source: lower,
             coefficient: rate_up,
-            electrons: 1,
         });
         nu_total[upper] += rate_down;
-        deposits.push(Deposit {
+        transfers.push(Transfer {
             target: lower,
             source: upper,
             coefficient: rate_down,
-            electrons: 1,
         });
     }
 }
@@ -970,6 +994,34 @@ mod tests {
                 rate * n
             );
         }
+    }
+
+    #[test]
+    fn thermal_exchange_keeps_direction() {
+        // 熱運動によるエネルギー交換は、隣のエネルギーセルの同じ角度セルにだけ電子を移す
+        // （向きの変化は弾性衝突そのものの再注入で入る）
+        let mesh = VelocityMesh::new(1.0, 0.01, 8).unwrap();
+        let kt = kelvin_to_ev(300.0);
+        let operator = CollisionOperator::new(&mesh, 1.0e22, vec![elastic(&mesh, kt)]).unwrap();
+        let (i0, j0) = (20, 2);
+        let mut state = vec![0.0; mesh.n_cells];
+        state[mesh.idx(i0, j0)] = 1.0;
+        let output = apply(&operator, &mesh, &state);
+        for i in [i0 - 1, i0 + 1] {
+            for j in 0..mesh.n_theta {
+                let value = output[mesh.idx(i, j)];
+                if j == j0 {
+                    assert!(value > 0.0, "cell ({i}, {j})");
+                } else {
+                    assert_eq!(value, 0.0, "cell ({i}, {j})");
+                }
+            }
+        }
+        assert!(output.iter().sum::<f64>().abs() < 1.0e-12 * operator.nu_total[i0]);
+        // 運動量移行の周波数は弾性衝突の周波数で、エネルギー交換の跳びを含まない
+        let nu = 1.0e22 * 1.0e-19 * mesh.v_c[i0];
+        assert!((operator.nu_momentum[i0] - nu).abs() <= 1.0e-12 * nu);
+        assert!(operator.nu_total[i0] > 1.001 * nu);
     }
 
     #[test]
